@@ -2,7 +2,7 @@
 # PYMES Data Strategy - Development Commands
 # =============================================================================
 
-.PHONY: help up down logs clean restart ps db-migrate db-generate db-studio db-reset api-logs worker-logs redis-cli psql api-dev worker-dev install lint format typecheck
+.PHONY: help up down logs clean restart ps db-migrate db-generate db-studio db-reset api-logs worker-logs redis-cli psql api-dev worker-dev install lint format typecheck test test-api test-worker test-coverage
 
 # Default target
 help:
@@ -19,6 +19,12 @@ help:
 	@echo "  Development (local):"
 	@echo "    make api-dev     - Start API Gateway (local dev mode)"
 	@echo "    make worker-dev  - Start Worker ETL (local dev mode)"
+	@echo ""
+	@echo "  Testing:"
+	@echo "    make test        - Run all tests (API + Worker)"
+	@echo "    make test-api    - Run API tests (Vitest)"
+	@echo "    make test-worker - Run Worker tests (pytest)"
+	@echo "    make test-coverage - Run all tests with coverage"
 	@echo ""
 	@echo "  Database (Prisma):"
 	@echo "    make db-migrate  - Run pending migrations"
@@ -163,3 +169,26 @@ format:
 typecheck:
 	cd api && pnpm typecheck
 	cd worker && uv run mypy src
+
+# -----------------------------------------------------------------------------
+# Testing
+# -----------------------------------------------------------------------------
+
+# Run all tests
+test: test-api test-worker
+
+# Run API tests (Vitest)
+test-api:
+	cd api && pnpm test
+
+# Run Worker tests (pytest)
+test-worker:
+	cd worker && source .venv/bin/activate && python -m pytest
+
+# Run all tests with coverage
+test-coverage:
+	@echo "=== API Coverage ==="
+	cd api && pnpm test:coverage
+	@echo ""
+	@echo "=== Worker Coverage ==="
+	cd worker && source .venv/bin/activate && python -m pytest --cov=src --cov-report=html

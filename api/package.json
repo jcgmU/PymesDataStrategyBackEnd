@@ -12,7 +12,11 @@
     "lint": "eslint src --ext .ts",
     "lint:fix": "eslint src --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest --coverage",
+    "test:ui": "vitest --ui"
   },
   "dependencies": {
     "express": "4.21.2",
@@ -37,6 +41,9 @@
     "typescript-eslint": "8.24.1",
     "prettier": "3.5.2",
     "nodemon": "3.1.9",
-    "tsx": "4.19.2"
+    "tsx": "4.19.2",
+    "vitest": "^2.1.0",
+    "@vitest/coverage-v8": "^2.1.0",
+    "@vitest/ui": "^2.1.0"
   }
 }

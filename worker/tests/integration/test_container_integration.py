@@ -11,7 +11,7 @@ from tests.fixtures.containers import RedisConnectionParams
 async def test_health_check_returns_redis_true_with_real_container(
     redis_container: RedisConnectionParams,
 ) -> None:
-    """Test that health_check returns {"redis": True} with real Redis container."""
+    """Test that health_check returns redis: True with real Redis container."""
     # Arrange: Create a real Redis client connected to the test container
     redis_client = aioredis.Redis(
         host=redis_container.host,
@@ -37,9 +37,9 @@ async def test_health_check_returns_redis_true_with_real_container(
         # Act: Call health_check
         result = await container.health_check()
 
-        # Assert: Redis should be healthy
-        assert result == {"redis": True}
+        # Assert: Redis should be healthy (storage may fail without MinIO)
         assert result["redis"] is True
+        assert "storage" in result  # storage check is also included
 
     finally:
         # Cleanup: Close the Redis connection
@@ -47,7 +47,7 @@ async def test_health_check_returns_redis_true_with_real_container(
 
 
 async def test_health_check_returns_redis_false_when_connection_fails() -> None:
-    """Test that health_check returns {"redis": False} when Redis is unreachable."""
+    """Test that health_check returns redis: False when Redis is unreachable."""
     # Arrange: Create a Redis client with invalid connection (non-existent port)
     redis_client = aioredis.Redis(
         host="localhost",
@@ -73,8 +73,8 @@ async def test_health_check_returns_redis_false_when_connection_fails() -> None:
         result = await container.health_check()
 
         # Assert: Redis should be unhealthy
-        assert result == {"redis": False}
         assert result["redis"] is False
+        assert "storage" in result  # storage check is also included
 
     finally:
         await redis_client.aclose()

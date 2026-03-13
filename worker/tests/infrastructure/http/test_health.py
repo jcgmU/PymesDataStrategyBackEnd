@@ -58,6 +58,9 @@ class TestReadinessEndpoint:
         with patch(
             "src.infrastructure.http.routes.health.get_container",
             return_value=mock_container,
+        ), patch(
+            "src.infrastructure.http.routes.health._get_worker_status",
+            return_value=True,
         ):
             response = client.get("/health/ready")
 
@@ -78,6 +81,32 @@ class TestReadinessEndpoint:
         with patch(
             "src.infrastructure.http.routes.health.get_container",
             return_value=mock_container,
+        ), patch(
+            "src.infrastructure.http.routes.health._get_worker_status",
+            return_value=True,
+        ):
+            response = client.get("/health/ready")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "not_ready"}
+
+    def test_readiness_returns_not_ready_when_worker_not_running(
+        self, client: TestClient
+    ) -> None:
+        """Test readiness returns not_ready when worker is not running."""
+        mock_container = AsyncMock()
+        mock_container.health_check.return_value = {
+            "database": True,
+            "redis": True,
+            "storage": True,
+        }
+
+        with patch(
+            "src.infrastructure.http.routes.health.get_container",
+            return_value=mock_container,
+        ), patch(
+            "src.infrastructure.http.routes.health._get_worker_status",
+            return_value=False,
         ):
             response = client.get("/health/ready")
 
@@ -100,6 +129,9 @@ class TestHealthCheckEndpoint:
         with patch(
             "src.infrastructure.http.routes.health.get_container",
             return_value=mock_container,
+        ), patch(
+            "src.infrastructure.http.routes.health._get_worker_status",
+            return_value=True,
         ):
             response = client.get("/health")
 
@@ -109,6 +141,7 @@ class TestHealthCheckEndpoint:
         assert data["checks"]["database"] is True
         assert data["checks"]["redis"] is True
         assert data["checks"]["storage"] is True
+        assert data["checks"]["worker"] is True
 
     def test_health_returns_degraded_when_partial(self, client: TestClient) -> None:
         """Test health returns degraded when some checks fail."""
@@ -122,12 +155,40 @@ class TestHealthCheckEndpoint:
         with patch(
             "src.infrastructure.http.routes.health.get_container",
             return_value=mock_container,
+        ), patch(
+            "src.infrastructure.http.routes.health._get_worker_status",
+            return_value=True,
         ):
             response = client.get("/health")
 
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "degraded"
+
+    def test_health_returns_degraded_when_worker_not_running(
+        self, client: TestClient
+    ) -> None:
+        """Test health returns degraded when worker is not running."""
+        mock_container = AsyncMock()
+        mock_container.health_check.return_value = {
+            "database": True,
+            "redis": True,
+            "storage": True,
+        }
+
+        with patch(
+            "src.infrastructure.http.routes.health.get_container",
+            return_value=mock_container,
+        ), patch(
+            "src.infrastructure.http.routes.health._get_worker_status",
+            return_value=False,
+        ):
+            response = client.get("/health")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "degraded"
+        assert data["checks"]["worker"] is False
 
     def test_health_returns_unhealthy_when_all_fail(self, client: TestClient) -> None:
         """Test health returns unhealthy when all checks fail."""
@@ -141,6 +202,9 @@ class TestHealthCheckEndpoint:
         with patch(
             "src.infrastructure.http.routes.health.get_container",
             return_value=mock_container,
+        ), patch(
+            "src.infrastructure.http.routes.health._get_worker_status",
+            return_value=False,
         ):
             response = client.get("/health")
 
@@ -156,6 +220,9 @@ class TestHealthCheckEndpoint:
         with patch(
             "src.infrastructure.http.routes.health.get_container",
             return_value=mock_container,
+        ), patch(
+            "src.infrastructure.http.routes.health._get_worker_status",
+            return_value=True,
         ):
             response = client.get("/health")
 

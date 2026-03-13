@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import type { Container } from '../../config/container.js';
 import { createHealthRoutes } from './health.routes.js';
+import { createDatasetRoutes } from './dataset.routes.js';
+import { createJobRoutes } from './job.routes.js';
 
 /**
  * Create all application routes.
@@ -11,9 +13,11 @@ export function createRoutes(container: Container): Router {
   // Mount health routes at root
   router.use(createHealthRoutes(container));
 
-  // Future routes will be mounted here:
-  // router.use('/api/v1/datasets', createDatasetRoutes(container));
-  // router.use('/api/v1/jobs', createJobRoutes(container));
+  // Dataset routes
+  router.use('/api/v1/datasets', createDatasetRoutes(container));
+
+  // Job routes
+  router.use('/api/v1/jobs', createJobRoutes(container));
 
   return router;
 }

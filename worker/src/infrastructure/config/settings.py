@@ -34,9 +34,12 @@ class Settings(BaseSettings):
     # MinIO / S3
     minio_endpoint: str = "localhost"
     minio_port: int = Field(default=9000, ge=1, le=65535)
-    minio_access_key: str | None = None
-    minio_secret_key: str | None = None
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
     minio_use_ssl: bool = False
+    minio_bucket: str = "datasets"
+    minio_processed_bucket: str = "processed-datasets"
+    minio_region: str = "us-east-1"
     minio_bucket_datasets: str = "datasets"
     minio_bucket_results: str = "results"
     minio_bucket_temp: str = "temp"

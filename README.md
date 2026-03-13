@@ -1,8 +1,10 @@
-# PYMES Data Strategy - Backend
+# PymesDataStrategyBackEnd
 
 Sistema ETL con Human-in-the-Loop para limpieza de datos asistida por IA.
 
-**🎯 Estado: MVP Fase 1 COMPLETADO** - 490 tests pasando (API: 237, Worker: 253)
+**Repositorio:** https://github.com/jcgmU/PymesDataStrategyBackEnd.git
+
+**🎯 Estado: MVP Fase 1 COMPLETADO** - 493 tests pasando (API: 240, Worker: 253)
 
 ## Arquitectura
 
@@ -95,6 +97,9 @@ make logs
 | GET | `/api/v1/datasets` | Listar datasets |
 | GET | `/api/v1/datasets/:id` | Obtener dataset por ID |
 | DELETE | `/api/v1/datasets/:id` | Eliminar dataset |
+| POST | `/api/v1/datasets/:id/transform` | Iniciar transformación ETL |
+| GET | `/api/v1/datasets/:id/download` | Obtener URL de descarga |
+| GET | `/api/v1/jobs/:jobId` | Consultar estado de un job |
 | GET | `/health` | Health check |
 
 ### Ejemplo de uso
@@ -108,6 +113,17 @@ curl -X POST http://localhost:3000/api/v1/datasets \
 
 # Listar datasets
 curl "http://localhost:3000/api/v1/datasets?userId=user123"
+
+# Iniciar transformación
+curl -X POST http://localhost:3000/api/v1/datasets/cm3abc123/transform \
+  -H "Content-Type: application/json" \
+  -d '{"transformations":[{"type":"TRIM_WHITESPACE","columns":["nombre"]}]}'
+
+# Consultar estado del job
+curl http://localhost:3000/api/v1/jobs/job-id-123
+
+# Obtener URL de descarga
+curl http://localhost:3000/api/v1/datasets/cm3abc123/download
 ```
 
 ## Health Checks
@@ -125,7 +141,7 @@ curl http://localhost:8000/health/ready  # Kubernetes readiness
 ## Tests
 
 ```bash
-# API Tests (237 tests)
+# API Tests (240 tests)
 cd api && pnpm test
 
 # Worker Tests (253 tests)  

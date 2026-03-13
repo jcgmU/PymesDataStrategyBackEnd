@@ -1,12 +1,16 @@
 """Dependency injection container."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import redis.asyncio as aioredis
 import structlog
 
+from src.application.transformations import DataTransformer
+from src.application.use_cases.process_dataset import ProcessDatasetUseCase
 from src.infrastructure.config.settings import Settings, get_settings
+from src.infrastructure.parsers.dataset_parser import DatasetParser
+from src.infrastructure.storage.minio_storage_service import MinioStorageService
 
 if TYPE_CHECKING:
     from redis.asyncio.client import Redis
@@ -19,6 +23,45 @@ class Container:
     settings: Settings
     redis_client: "Redis[Any]"
     logger: structlog.stdlib.BoundLogger
+    
+    # Services (lazy initialized)
+    _storage: MinioStorageService | None = field(default=None, repr=False)
+    _parser: DatasetParser | None = field(default=None, repr=False)
+    _transformer: DataTransformer | None = field(default=None, repr=False)
+    _process_dataset_use_case: ProcessDatasetUseCase | None = field(default=None, repr=False)
+
+    @property
+    def storage(self) -> MinioStorageService:
+        """Get storage service (lazy initialization)."""
+        if self._storage is None:
+            self._storage = MinioStorageService(settings=self.settings)
+        return self._storage
+
+    @property
+    def parser(self) -> DatasetParser:
+        """Get dataset parser (lazy initialization)."""
+        if self._parser is None:
+            self._parser = DatasetParser()
+        return self._parser
+
+    @property
+    def transformer(self) -> DataTransformer:
+        """Get data transformer (lazy initialization)."""
+        if self._transformer is None:
+            self._transformer = DataTransformer()
+        return self._transformer
+
+    @property
+    def process_dataset_use_case(self) -> ProcessDatasetUseCase:
+        """Get ProcessDataset use case (lazy initialization)."""
+        if self._process_dataset_use_case is None:
+            self._process_dataset_use_case = ProcessDatasetUseCase(
+                storage=self.storage,
+                parser=self.parser,
+                transformer=self.transformer,
+                output_bucket=self.settings.minio_processed_bucket,
+            )
+        return self._process_dataset_use_case
 
     async def health_check(self) -> dict[str, bool]:
         """Check health of all dependencies."""
@@ -31,11 +74,22 @@ class Container:
         except Exception:
             checks["redis"] = False
 
+        # MinIO/S3 health
+        try:
+            await self.storage.health_check()
+            checks["storage"] = True
+        except Exception:
+            checks["storage"] = False
+
         return checks
 
     async def close(self) -> None:
         """Close all connections."""
-        await self.redis_client.aclose()
+        try:
+            await self.redis_client.aclose()
+        except AttributeError:
+            # Fallback for older redis versions
+            await self.redis_client.close()
 
 
 _container: Container | None = None

@@ -1,7 +1,8 @@
-# PYMES Data Strategy - Documentación del Proyecto
+# PymesDataStrategyBackEnd - Documentación del Proyecto
 
+**Repositorio:** https://github.com/jcgmU/PymesDataStrategyBackEnd.git  
 **Fecha de actualización:** 12 de Marzo, 2026  
-**Estado actual:** MVP Fase 1 COMPLETADO - Sistema ETL funcional con 490 tests pasando
+**Estado actual:** MVP Fase 1 COMPLETADO - Sistema ETL funcional con 493 tests pasando
 
 ---
 
@@ -41,11 +42,11 @@ PYMES que necesitan:
 
 ### 🎯 MVP Fase 1: COMPLETADO ✅
 
-**Total: 490 tests pasando**
+**Total: 493 tests pasando**
 
 | Día | Componente | Tests | Estado |
 |-----|-----------|--------|--------|
-| **DÍA 1** | API + Storage (MinIO, Prisma, BullMQ Producer) | 237 ✅ | Completado |
+| **DÍA 1** | API + Storage (MinIO, Prisma, BullMQ Producer) | 240 ✅ | Completado |
 | **DÍA 2** | Worker + Processing (Parser, Transformaciones) | 243 ✅ | Completado |
 | **DÍA 3** | Integration (ETLJobProcessor, Health Checks, E2E) | 253 ✅ | Completado |
 
@@ -59,6 +60,7 @@ PYMES que necesitan:
 ✅ **Sistema de Trabajos**
 - Cola asíncrona con BullMQ (Node.js ↔ Python)
 - Estados: QUEUED → PROCESSING → COMPLETED
+- Consulta de estado vía `GET /api/v1/jobs/:jobId`
 - Manejo de errores y reintentos
 
 ✅ **Procesamiento ETL**
@@ -256,6 +258,9 @@ Ambos servicios (API y Worker) siguen **Arquitectura Hexagonal** para separació
 | GET | `/api/v1/datasets` | Listar datasets | Query: userId |
 | GET | `/api/v1/datasets/:id` | Obtener dataset por ID | - |
 | DELETE | `/api/v1/datasets/:id` | Eliminar dataset | - |
+| POST | `/api/v1/datasets/:id/transform` | Iniciar transformación ETL | Header: x-user-id |
+| GET | `/api/v1/datasets/:id/download` | Obtener URL de descarga | - |
+| GET | `/api/v1/jobs/:jobId` | Consultar estado de un job | - |
 | GET | `/health` | Health check del API | - |
 
 ### Ejemplos con curl
@@ -522,8 +527,8 @@ DataFrame Limpio
 
 ```bash
 # Clonar el repositorio
-git clone <repository-url>
-cd proyecto/backend
+git clone https://github.com/jcgmU/PymesDataStrategyBackEnd.git
+cd PymesDataStrategyBackEnd
 
 # Copiar variables de entorno
 cp .env.example .env
@@ -585,7 +590,7 @@ make psql
 ```bash
 cd api
 
-# Ejecutar todos los tests (237 tests)
+# Ejecutar todos los tests (240 tests)
 pnpm test
 
 # Tests con cobertura
@@ -599,7 +604,7 @@ pnpm test -- --grep "DatasetController"
 ```
 
 **Tipos de tests:**
-- **Unitarios**: 189 tests (domain, application layer)
+- **Unitarios**: 192 tests (domain, application layer)
 - **Integración**: 48 tests (repository, storage, queue)
 
 ### Tests del Worker (Python)
@@ -629,12 +634,12 @@ uv run pytest -v
 | Componente | Cobertura | Tests |
 |------------|-----------|-------|
 | API Domain | 95% | 89 tests |
-| API Application | 92% | 76 tests |
+| API Application | 92% | 79 tests |
 | API Infrastructure | 85% | 72 tests |
 | Worker Transformations | 98% | 134 tests |
 | Worker Parsers | 90% | 67 tests |
 | Worker Integration | 88% | 52 tests |
-| **Total** | **91%** | **490 tests** |
+| **Total** | **91%** | **493 tests** |
 
 ---
 
@@ -860,10 +865,10 @@ backend/
 
 ## Contacto y Recursos
 
-- **Repositorio:** Backend completo funcional
+- **Repositorio:** https://github.com/jcgmU/PymesDataStrategyBackEnd.git
 - **Documentación técnica:** `README.md` en la raíz del proyecto  
 - **Especificaciones SDD:** `openspec/` directory
 - **Health checks:** API (`localhost:3000/health`) y Worker (`localhost:8000/health`)
-- **Tests:** 490 tests pasando (91% cobertura)
+- **Tests:** 493 tests pasando (91% cobertura)
 
 **MVP Fase 1 completado exitosamente** - Sistema ETL funcional listo para evolucionar hacia Human-in-the-Loop con IA.

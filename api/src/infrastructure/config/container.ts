@@ -2,6 +2,12 @@ import { Redis } from 'ioredis';
 import { type Env, getEnv } from './env.js';
 import { getPrismaClient, disconnectPrisma } from '../persistence/prisma/client.js';
 import type { PrismaClient } from '@prisma/client';
+import { MinioStorageService } from '../storage/MinioStorageService.js';
+import type { StorageService } from '../../domain/ports/services/StorageService.js';
+import { PrismaDatasetRepository } from '../persistence/repositories/PrismaDatasetRepository.js';
+import type { DatasetRepository } from '../../domain/ports/repositories/DatasetRepository.js';
+import { BullMQJobQueueService } from '../messaging/bullmq/BullMQJobQueueService.js';
+import type { JobQueueService } from '../../domain/ports/services/JobQueueService.js';
 
 /**
  * Simple dependency injection container.
@@ -10,6 +16,9 @@ import type { PrismaClient } from '@prisma/client';
 export class Container {
   private readonly env: Env;
   private redisInstance: Redis | null = null;
+  private storageInstance: StorageService | null = null;
+  private datasetRepositoryInstance: DatasetRepository | null = null;
+  private jobQueueInstance: JobQueueService | null = null;
 
   constructor() {
     this.env = getEnv();
@@ -33,6 +42,38 @@ export class Container {
       });
     }
     return this.redisInstance;
+  }
+
+  get storage(): StorageService {
+    if (this.storageInstance === null) {
+      this.storageInstance = new MinioStorageService({
+        endpoint: this.env.MINIO_ENDPOINT,
+        port: this.env.MINIO_PORT,
+        accessKey: this.env.MINIO_ACCESS_KEY ?? 'minioadmin',
+        secretKey: this.env.MINIO_SECRET_KEY ?? 'minioadmin123',
+        useSSL: this.env.MINIO_USE_SSL,
+        bucketDatasets: this.env.MINIO_BUCKET_DATASETS,
+        bucketResults: this.env.MINIO_BUCKET_RESULTS,
+        bucketTemp: this.env.MINIO_BUCKET_TEMP,
+      });
+    }
+    return this.storageInstance;
+  }
+
+  get datasetRepository(): DatasetRepository {
+    if (this.datasetRepositoryInstance === null) {
+      this.datasetRepositoryInstance = new PrismaDatasetRepository(this.prisma);
+    }
+    return this.datasetRepositoryInstance;
+  }
+
+  get jobQueue(): JobQueueService {
+    if (this.jobQueueInstance === null) {
+      this.jobQueueInstance = new BullMQJobQueueService({
+        redis: this.redis,
+      });
+    }
+    return this.jobQueueInstance;
   }
 
   /**
@@ -60,9 +101,25 @@ export class Container {
   }
 
   /**
+   * Check if MinIO/S3 storage is healthy.
+   */
+  async checkStorage(): Promise<boolean> {
+    try {
+      return await this.storage.healthCheck();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Gracefully shutdown all connections.
    */
   async shutdown(): Promise<void> {
+    if (this.jobQueueInstance !== null) {
+      const bullmqService = this.jobQueueInstance as BullMQJobQueueService;
+      await bullmqService.close();
+      this.jobQueueInstance = null;
+    }
     if (this.redisInstance !== null) {
       await this.redisInstance.quit();
       this.redisInstance = null;

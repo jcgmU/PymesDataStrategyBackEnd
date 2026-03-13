@@ -24,6 +24,13 @@ def get_deps() -> Container:
     return get_container()
 
 
+def _get_worker_status() -> bool:
+    """Get worker running status without circular import."""
+    # Import here to avoid circular dependency
+    from src.infrastructure.http import worker_state
+    return worker_state.is_worker_running()
+
+
 @router.get("/health", response_model=HealthCheck)
 async def health_check(container: Container = Depends(get_deps)) -> HealthCheck:
     """Check the health of the worker service.
@@ -32,6 +39,9 @@ async def health_check(container: Container = Depends(get_deps)) -> HealthCheck:
         HealthCheck: Status of all service dependencies.
     """
     checks = await container.health_check()
+    
+    # Add worker status check
+    checks["worker"] = _get_worker_status()
 
     # Determine overall status
     all_healthy = all(checks.values())
@@ -61,6 +71,11 @@ async def liveness() -> dict[str, str]:
 async def readiness(container: Container = Depends(get_deps)) -> dict[str, str]:
     """Kubernetes readiness probe - checks if service can handle traffic."""
     checks = await container.health_check()
+    
+    # Also check worker is running
+    if not _get_worker_status():
+        return {"status": "not_ready"}
+    
     if all(checks.values()):
         return {"status": "ready"}
     return {"status": "not_ready"}

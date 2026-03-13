@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
  * Ensures type safety and encapsulates ID generation logic.
  */
 export class DatasetId {
-  private constructor(private readonly value: string) {}
+  private constructor(private readonly _value: string) {}
 
   static generate(): DatasetId {
     return new DatasetId(randomUUID());
@@ -18,11 +18,15 @@ export class DatasetId {
     return new DatasetId(id);
   }
 
+  get value(): string {
+    return this._value;
+  }
+
   toString(): string {
-    return this.value;
+    return this._value;
   }
 
   equals(other: DatasetId): boolean {
-    return this.value === other.value;
+    return this._value === other._value;
   }
 }

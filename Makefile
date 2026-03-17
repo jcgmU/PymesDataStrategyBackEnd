@@ -2,7 +2,7 @@
 # PYMES Data Strategy - Development Commands
 # =============================================================================
 
-.PHONY: help up down logs clean restart ps db-migrate db-generate db-studio db-reset api-logs worker-logs redis-cli psql api-dev worker-dev install lint format typecheck test test-api test-worker test-coverage frontend-logs frontend-dev
+.PHONY: help up down logs clean restart ps db-migrate db-generate db-studio db-reset api-logs worker-logs redis-cli psql api-dev worker-dev install lint format typecheck test test-api test-worker test-coverage frontend-logs frontend-dev ci-watch
 
 # Default target
 help:
@@ -206,3 +206,9 @@ test-coverage:
 	@echo ""
 	@echo "=== Worker Coverage ==="
 	cd worker && source .venv/bin/activate && python -m pytest --cov=src --cov-report=html
+
+# ── CI Loop ──────────────────────────────────────────────────────────────────
+# Esperar resultado del último run de GitHub Actions.
+# Si falla, imprime los logs para que el agente pueda corregir y re-pushear.
+ci-watch:
+	@./scripts/ci-watch.sh

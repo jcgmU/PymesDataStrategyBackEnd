@@ -26,7 +26,7 @@ class Container:
     settings: Settings
     redis_client: "Redis[Any]"
     logger: structlog.stdlib.BoundLogger
-    
+
     # Services (lazy initialized)
     _storage: MinioStorageService | None = field(default=None, repr=False)
     _parser: DatasetParser | None = field(default=None, repr=False)

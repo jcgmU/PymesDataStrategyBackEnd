@@ -1,6 +1,6 @@
 """Health check endpoint."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends
@@ -34,12 +34,12 @@ def _get_worker_status() -> bool:
 @router.get("/health", response_model=HealthCheck)
 async def health_check(container: Container = Depends(get_deps)) -> HealthCheck:
     """Check the health of the worker service.
-    
+
     Returns:
         HealthCheck: Status of all service dependencies.
     """
     checks = await container.health_check()
-    
+
     # Add worker status check
     checks["worker"] = _get_worker_status()
 
@@ -56,7 +56,7 @@ async def health_check(container: Container = Depends(get_deps)) -> HealthCheck:
 
     return HealthCheck(
         status=status,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
         checks=checks,
     )
 
@@ -71,11 +71,11 @@ async def liveness() -> dict[str, str]:
 async def readiness(container: Container = Depends(get_deps)) -> dict[str, str]:
     """Kubernetes readiness probe - checks if service can handle traffic."""
     checks = await container.health_check()
-    
+
     # Also check worker is running
     if not _get_worker_status():
         return {"status": "not_ready"}
-    
+
     if all(checks.values()):
         return {"status": "ready"}
     return {"status": "not_ready"}

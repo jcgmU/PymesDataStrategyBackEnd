@@ -15,7 +15,7 @@ JobStatus mapping (worker domain → Prisma DB enum):
 
 import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -139,10 +139,10 @@ class SQLAlchemyJobRepository(JobRepository):
         values: dict[str, Any] = {"status": db_status}
 
         if status == JobStatus.PROCESSING:
-            values["started_at"] = datetime.now(timezone.utc)
+            values["started_at"] = datetime.now(UTC)
 
         if status in (JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED):
-            values["completed_at"] = datetime.now(timezone.utc)
+            values["completed_at"] = datetime.now(UTC)
 
         if status == JobStatus.AWAITING_REVIEW:
             # Keep status = PROCESSING in DB; mark hitl_waiting in ai_suggestions
@@ -250,7 +250,7 @@ class SQLAlchemyJobRepository(JobRepository):
             error_message=model.error_message,
             progress=100 if status == JobStatus.COMPLETED else 0,
             created_by=UUID(model.user_id) if len(model.user_id) == 36 else UUID(int=0),
-            created_at=model.created_at or datetime.now(timezone.utc),
+            created_at=model.created_at or datetime.now(UTC),
             started_at=model.started_at,
             completed_at=model.completed_at,
             metadata=model.ai_suggestions or {},
@@ -264,5 +264,5 @@ class SQLAlchemyJobRepository(JobRepository):
             action=model.action,
             correction=model.correction,
             user_id=model.user_id,
-            created_at=model.created_at or datetime.now(timezone.utc),
+            created_at=model.created_at or datetime.now(UTC),
         )

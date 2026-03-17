@@ -1,7 +1,7 @@
 """FastAPI application setup."""
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import AsyncIterator
 
 from fastapi import FastAPI
@@ -22,7 +22,7 @@ _worker_task: asyncio.Task | None = None
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan - startup and shutdown events."""
     global _worker_task
-    
+
     # Startup
     container = await init_container()
     container.logger.info(
@@ -30,7 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         environment=container.settings.environment,
         port=container.settings.port,
     )
-    
+
     # Initialize and start BullMQ worker
     worker = BullMQWorkerService(
         redis_host=container.settings.redis_host,
@@ -38,25 +38,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         queue_name="etl-transformations",
         concurrency=container.settings.worker_concurrency,
     )
-    
+
     # Create ETL processor with the use case from container
     etl_processor = ETLJobProcessor(
         process_dataset=container.process_dataset_use_case
     )
     worker.set_processor(etl_processor)
-    
+
     # Store worker in state module
     worker_state.set_worker(worker)
-    
+
     # Start worker in background task
     _worker_task = asyncio.create_task(worker.run_forever())
     container.logger.info("BullMQ worker started")
-    
+
     yield
-    
+
     # Shutdown
     container.logger.info("Worker ETL shutting down")
-    
+
     # Stop BullMQ worker
     current_worker = worker_state.get_worker()
     if current_worker:
@@ -64,11 +64,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         worker_state.set_worker(None)
     if _worker_task:
         _worker_task.cancel()
-        try:
+        with suppress(asyncio.CancelledError):
             await _worker_task
-        except asyncio.CancelledError:
-            pass
-    
+
     await close_container()
 
 

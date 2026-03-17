@@ -1,6 +1,7 @@
 """Process Dataset use case - orchestrates ETL pipeline with HITL support."""
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
@@ -37,7 +38,7 @@ _HITL_MAX_WAIT_SECONDS = 1800
 @dataclass
 class ProcessDatasetInput:
     """Input for ProcessDataset use case."""
-    
+
     dataset_id: UUID
     job_id: UUID
     source_key: str  # S3/MinIO key for input file
@@ -49,7 +50,7 @@ class ProcessDatasetInput:
 @dataclass
 class ProcessDatasetOutput:
     """Output from ProcessDataset use case."""
-    
+
     success: bool
     dataset_id: UUID
     job_id: UUID
@@ -66,7 +67,7 @@ class ProcessDatasetOutput:
 
 class ProcessDatasetUseCase:
     """Orchestrates the ETL pipeline for dataset processing.
-    
+
     Full HITL flow:
     1. Update job status → PROCESSING
     2. Download raw file from storage
@@ -94,7 +95,7 @@ class ProcessDatasetUseCase:
         hitl_max_wait: float = _HITL_MAX_WAIT_SECONDS,
     ) -> None:
         """Initialize the use case.
-        
+
         Args:
             storage: Storage service for file operations.
             parser: Dataset parser (creates default if None).
@@ -115,10 +116,10 @@ class ProcessDatasetUseCase:
 
     async def execute(self, input_data: ProcessDatasetInput) -> ProcessDatasetOutput:
         """Execute the dataset processing pipeline.
-        
+
         Args:
             input_data: Processing input parameters.
-            
+
         Returns:
             Processing output with results.
         """
@@ -131,7 +132,7 @@ class ProcessDatasetUseCase:
 
         job_id_str = str(input_data.job_id)
         dataset_id_str = str(input_data.dataset_id)
-        
+
         try:
             # ---------------------------------------------------------------
             # Step 1: Mark job as PROCESSING
@@ -144,27 +145,27 @@ class ProcessDatasetUseCase:
             log.info("Downloading source file")
             source_bucket, source_key = self._parse_storage_path(input_data.source_key)
             file_data = await self._storage.download_file(source_bucket, source_key)
-            
+
             # ---------------------------------------------------------------
             # Step 3: Parse file into DataFrame
             # ---------------------------------------------------------------
             log.info("Parsing file", filename=input_data.filename)
             df = self._parser.parse(file_data, input_data.filename)
-            
+
             rows_initial = df.height
             log.info("File parsed", rows=rows_initial, columns=df.width)
-            
+
             # ---------------------------------------------------------------
             # Step 4: Apply transformations
             # ---------------------------------------------------------------
             transformation_results = []
-            
+
             if input_data.transformations:
                 log.info("Applying transformations", count=len(input_data.transformations))
-                
+
                 configs = self._build_transformation_configs(input_data.transformations)
                 df, results = self._transformer.transform_many(df, configs)
-                
+
                 transformation_results = [
                     {
                         "type": r.transformation.value,
@@ -177,7 +178,7 @@ class ProcessDatasetUseCase:
                     }
                     for r in results
                 ]
-                
+
                 failures = [r for r in results if not r.success]
                 if failures:
                     error_msg = f"Transformation failed: {failures[0].error}"
@@ -229,13 +230,13 @@ class ProcessDatasetUseCase:
             # ---------------------------------------------------------------
             output_format = self._get_output_format(input_data.output_format)
             output_data = self._parser.to_bytes(df, output_format)
-            
+
             output_key = self._generate_output_key(
                 input_data.dataset_id,
                 input_data.job_id,
                 output_format,
             )
-            
+
             log.info("Uploading processed file", output_key=output_key)
             await self._storage.upload_file(
                 bucket=self._output_bucket,
@@ -243,7 +244,7 @@ class ProcessDatasetUseCase:
                 data=BytesIO(output_data),
                 content_type=self._get_content_type(output_format),
             )
-            
+
             # Step 8: Generate preview and schema
             preview = self._parser.preview(df, n=10)
             schema = self._parser.get_schema(df)
@@ -262,7 +263,7 @@ class ProcessDatasetUseCase:
                 JobStatus.COMPLETED,
                 result=result_meta,
             )
-            
+
             log.info(
                 "Processing complete",
                 rows_processed=df.height,
@@ -270,7 +271,7 @@ class ProcessDatasetUseCase:
                 output_key=output_key,
                 anomalies=anomalies_detected,
             )
-            
+
             return ProcessDatasetOutput(
                 success=True,
                 dataset_id=input_data.dataset_id,
@@ -284,7 +285,7 @@ class ProcessDatasetUseCase:
                 anomalies_detected=anomalies_detected,
                 decisions_applied=decisions_applied,
             )
-            
+
         except Exception as e:
             log.error("Processing failed", error=str(e), error_type=type(e).__name__)
             await self._update_status(job_id_str, JobStatus.FAILED, error=str(e))
@@ -475,13 +476,11 @@ class ProcessDatasetUseCase:
             pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
         )
         float_types = (pl.Float32, pl.Float64)
-        try:
+        with suppress(ValueError, TypeError):
             if dtype in integer_types:
                 return int(value)
             if dtype in float_types:
                 return float(value)
-        except (ValueError, TypeError):
-            pass
         return value
 
     # =========================================================================
@@ -518,7 +517,7 @@ class ProcessDatasetUseCase:
     ) -> list[TransformationConfig]:
         """Convert raw config dicts to TransformationConfig objects."""
         configs = []
-        
+
         for raw in raw_configs:
             transformation_type = TransformationType(raw["type"])
             config = TransformationConfig(
@@ -527,7 +526,7 @@ class ProcessDatasetUseCase:
                 params=raw.get("params", {}),
             )
             configs.append(config)
-        
+
         return configs
 
     def _get_output_format(self, format_str: str) -> FileFormat:

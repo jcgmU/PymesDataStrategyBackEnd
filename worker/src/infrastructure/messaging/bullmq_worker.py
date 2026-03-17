@@ -1,6 +1,7 @@
 """BullMQ worker service for processing transformation jobs."""
 
 import asyncio
+from contextlib import suppress
 from typing import Any, Callable, Coroutine
 from uuid import UUID
 
@@ -15,7 +16,7 @@ logger = structlog.get_logger("pymes.worker.bullmq")
 
 class BullMQWorkerService:
     """BullMQ worker that processes transformation jobs from the queue.
-    
+
     This worker connects to Redis and listens for jobs on the specified queue.
     When a job arrives, it delegates processing to the provided JobProcessor.
     """
@@ -28,7 +29,7 @@ class BullMQWorkerService:
         concurrency: int = 2,
     ) -> None:
         """Initialize the BullMQ worker.
-        
+
         Args:
             redis_host: Redis server hostname.
             redis_port: Redis server port.
@@ -45,7 +46,7 @@ class BullMQWorkerService:
 
     def set_processor(self, processor: JobProcessor) -> None:
         """Set the job processor to use for handling jobs.
-        
+
         Args:
             processor: JobProcessor implementation.
         """
@@ -53,65 +54,63 @@ class BullMQWorkerService:
 
     async def _process_job(self, job: Job, token: str | None = None) -> dict[str, Any]:
         """Process a single job from the queue.
-        
+
         Args:
             job: BullMQ job instance.
             token: Optional lock token.
-            
+
         Returns:
             Job processing result.
-            
+
         Raises:
             ValueError: If no processor is configured.
         """
         if self._processor is None:
             raise ValueError("No job processor configured. Call set_processor() first.")
-        
+
         job_id = job.id or "unknown"
         job_data = job.data or {}
-        
+
         log = logger.bind(
             job_id=job_id,
             job_name=job.name,
             dataset_id=job_data.get("datasetId"),
         )
-        
+
         log.info("Processing job started")
-        
+
         try:
             # Update job progress to indicate start
             await job.updateProgress(5)
-            
+
             # Process the job
             result = await self._processor.process(job_data)
-            
+
             # Update progress to complete
             await job.updateProgress(100)
-            
+
             log.info(
                 "Job completed successfully",
                 result=result,
             )
-            
+
             return result
-            
+
         except Exception as e:
             log.error(
                 "Job processing failed",
                 error=str(e),
                 error_type=type(e).__name__,
             )
-            
+
             # Report error to processor if it has the capability
             if hasattr(job_data, "get") and job_data.get("jobId"):
-                try:
+                with suppress(Exception):
                     await self._processor.on_error(
                         UUID(job_data["jobId"]),
                         str(e),
                     )
-                except Exception:
-                    pass  # Don't fail on error reporting
-            
+
             raise
 
     async def start(self) -> None:
@@ -119,17 +118,17 @@ class BullMQWorkerService:
         if self._running:
             logger.warning("Worker already running")
             return
-        
+
         if self._processor is None:
             raise ValueError("No job processor configured. Call set_processor() first.")
-        
+
         logger.info(
             "Starting BullMQ worker",
             queue=self._queue_name,
             concurrency=self._concurrency,
             redis=f"{self._redis_host}:{self._redis_port}",
         )
-        
+
         self._worker = Worker(
             name=self._queue_name,
             processor=self._process_job,
@@ -141,7 +140,7 @@ class BullMQWorkerService:
                 "concurrency": self._concurrency,
             },
         )
-        
+
         self._running = True
         logger.info("Worker started successfully")
 
@@ -149,9 +148,9 @@ class BullMQWorkerService:
         """Stop the worker gracefully."""
         if not self._running or self._worker is None:
             return
-        
+
         logger.info("Stopping BullMQ worker...")
-        
+
         try:
             await self._worker.close()
         except Exception as e:
@@ -168,12 +167,12 @@ class BullMQWorkerService:
 
     async def run_forever(self) -> None:
         """Run the worker until interrupted.
-        
+
         This is a blocking call that keeps the worker running.
         Use Ctrl+C or call stop() from another task to stop.
         """
         await self.start()
-        
+
         try:
             while self._running:
                 await asyncio.sleep(1)
@@ -185,7 +184,7 @@ class BullMQWorkerService:
 
 class SimpleJobProcessor(JobProcessor):
     """Simple job processor that delegates to a callback function.
-    
+
     Useful for testing or simple use cases where you want to provide
     a processing function directly.
     """
@@ -197,7 +196,7 @@ class SimpleJobProcessor(JobProcessor):
         on_error_fn: Callable[[UUID, str], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         """Initialize the processor with callback functions.
-        
+
         Args:
             process_fn: Async function to process job data.
             on_progress_fn: Optional async function to report progress.

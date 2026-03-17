@@ -14,7 +14,7 @@ logger = structlog.get_logger("pymes.worker.parser")
 
 class FileFormat(str, Enum):
     """Supported file formats."""
-    
+
     CSV = "csv"
     EXCEL = "xlsx"
     EXCEL_XLS = "xls"
@@ -24,25 +24,25 @@ class FileFormat(str, Enum):
 
 class ParserError(Exception):
     """Base error for parser operations."""
-    
+
     pass
 
 
 class UnsupportedFormatError(ParserError):
     """Raised when file format is not supported."""
-    
+
     pass
 
 
 class ParseError(ParserError):
     """Raised when parsing fails."""
-    
+
     pass
 
 
 class DatasetParser:
     """Parser for dataset files using Polars.
-    
+
     Supports CSV, Excel (xlsx/xls), JSON, and Parquet formats.
     Returns data as Polars DataFrames for efficient processing.
     """
@@ -66,7 +66,7 @@ class DatasetParser:
         json_orient: str = "records",
     ) -> None:
         """Initialize parser with configuration options.
-        
+
         Args:
             csv_separator: Column separator for CSV files.
             csv_quote_char: Quote character for CSV files.
@@ -84,25 +84,25 @@ class DatasetParser:
 
     def detect_format(self, filename: str) -> FileFormat:
         """Detect file format from filename extension.
-        
+
         Args:
             filename: Name of the file (can include path).
-            
+
         Returns:
             Detected file format.
-            
+
         Raises:
             UnsupportedFormatError: If format is not supported.
         """
         path = Path(filename)
         extension = path.suffix.lower()
-        
+
         if extension not in self.EXTENSION_MAP:
             raise UnsupportedFormatError(
                 f"Unsupported file format: {extension}. "
                 f"Supported formats: {list(self.EXTENSION_MAP.keys())}"
             )
-        
+
         return self.EXTENSION_MAP[extension]
 
     def parse(
@@ -112,25 +112,25 @@ class DatasetParser:
         file_format: FileFormat | None = None,
     ) -> pl.DataFrame:
         """Parse file data into a Polars DataFrame.
-        
+
         Args:
             data: Raw file bytes.
             filename: Name of the file (used for format detection).
             file_format: Optional explicit format (overrides detection).
-            
+
         Returns:
             Polars DataFrame with parsed data.
-            
+
         Raises:
             UnsupportedFormatError: If format is not supported.
             ParseError: If parsing fails.
         """
         if file_format is None:
             file_format = self.detect_format(filename)
-        
+
         log = logger.bind(filename=filename, format=file_format.value)
         log.info("Parsing file")
-        
+
         try:
             if file_format == FileFormat.CSV:
                 return self._parse_csv(data)
@@ -168,7 +168,7 @@ class DatasetParser:
         kwargs: dict[str, Any] = {}
         if self._excel_sheet_name is not None:
             kwargs["sheet_name"] = self._excel_sheet_name
-        
+
         return pl.read_excel(
             BytesIO(data),
             infer_schema_length=10000,
@@ -186,10 +186,10 @@ class DatasetParser:
 
     def get_schema(self, df: pl.DataFrame) -> dict[str, str]:
         """Get schema information from DataFrame.
-        
+
         Args:
             df: Polars DataFrame.
-            
+
         Returns:
             Dictionary mapping column names to type names.
         """
@@ -197,10 +197,10 @@ class DatasetParser:
 
     def get_stats(self, df: pl.DataFrame) -> dict[str, Any]:
         """Get basic statistics about the DataFrame.
-        
+
         Args:
             df: Polars DataFrame.
-            
+
         Returns:
             Dictionary with statistics.
         """
@@ -219,16 +219,16 @@ class DatasetParser:
         file_format: FileFormat = FileFormat.PARQUET,
     ) -> bytes:
         """Convert DataFrame back to bytes.
-        
+
         Args:
             df: Polars DataFrame.
             file_format: Output format.
-            
+
         Returns:
             Serialized bytes.
         """
         buffer = BytesIO()
-        
+
         if file_format == FileFormat.CSV:
             df.write_csv(buffer)
         elif file_format in (FileFormat.EXCEL, FileFormat.EXCEL_XLS):
@@ -241,7 +241,7 @@ class DatasetParser:
             df.write_parquet(buffer)
         else:
             raise UnsupportedFormatError(f"Cannot write format: {file_format}")
-        
+
         buffer.seek(0)
         return buffer.read()
 
@@ -252,12 +252,12 @@ class DatasetParser:
         seed: int | None = None,
     ) -> pl.DataFrame:
         """Get a sample of rows from DataFrame.
-        
+
         Args:
             df: Source DataFrame.
             n: Number of rows to sample.
             seed: Random seed for reproducibility.
-            
+
         Returns:
             Sampled DataFrame.
         """
@@ -271,11 +271,11 @@ class DatasetParser:
         n: int = 10,
     ) -> list[dict[str, Any]]:
         """Get first n rows as list of dicts for preview.
-        
+
         Args:
             df: Source DataFrame.
             n: Number of rows to preview.
-            
+
         Returns:
             List of row dictionaries.
         """

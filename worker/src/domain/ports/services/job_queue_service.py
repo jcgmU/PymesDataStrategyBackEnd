@@ -18,7 +18,7 @@ class JobQueueService(ABC):
         delay: int | None = None,
     ) -> str:
         """Enqueue a transformation job.
-        
+
         Returns the queue job ID.
         """
         ...

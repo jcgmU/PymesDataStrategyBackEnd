@@ -17,7 +17,7 @@ logger = structlog.get_logger("pymes.worker.processor")
 
 class ETLJobProcessor(JobProcessor):
     """Processes ETL transformation jobs from the queue.
-    
+
     This processor receives job data from BullMQ and delegates
     to the ProcessDataset use case for actual processing.
     """
@@ -29,7 +29,7 @@ class ETLJobProcessor(JobProcessor):
         on_error_callback: Any = None,
     ) -> None:
         """Initialize the processor.
-        
+
         Args:
             process_dataset: The ProcessDataset use case.
             on_progress_callback: Optional callback for progress updates.
@@ -41,7 +41,7 @@ class ETLJobProcessor(JobProcessor):
 
     async def process(self, job_data: dict[str, Any]) -> dict[str, Any]:
         """Process an ETL job.
-        
+
         Args:
             job_data: Job data from queue containing:
                 - datasetId: UUID of the dataset
@@ -50,7 +50,7 @@ class ETLJobProcessor(JobProcessor):
                 - filename: Original filename
                 - transformations: List of transformation configs
                 - outputFormat: Optional output format
-                
+
         Returns:
             Processing result dictionary.
         """
@@ -59,7 +59,7 @@ class ETLJobProcessor(JobProcessor):
             job_id=job_data.get("jobId"),
         )
         log.info("Processing ETL job")
-        
+
         try:
             # Build input from job data
             input_data = ProcessDatasetInput(
@@ -70,10 +70,10 @@ class ETLJobProcessor(JobProcessor):
                 transformations=job_data.get("transformations", []),
                 output_format=job_data.get("outputFormat", "parquet"),
             )
-            
+
             # Execute use case
             output = await self._process_dataset.execute(input_data)
-            
+
             # Build result
             result = {
                 "success": output.success,
@@ -86,7 +86,7 @@ class ETLJobProcessor(JobProcessor):
                 "preview": output.preview,
                 "schema": output.schema,
             }
-            
+
             if not output.success:
                 result["error"] = output.error
                 log.error("Job failed", error=output.error)
@@ -96,33 +96,33 @@ class ETLJobProcessor(JobProcessor):
                     rows_processed=output.rows_processed,
                     output_key=output.output_key,
                 )
-            
+
             return result
-            
+
         except Exception as e:
             log.error("Job processing error", error=str(e))
             raise
 
     async def on_progress(self, job_id: UUID, progress: int) -> None:
         """Report job progress.
-        
+
         Args:
             job_id: Job identifier.
             progress: Progress percentage (0-100).
         """
         if self._on_progress_callback:
             await self._on_progress_callback(job_id, progress)
-        
+
         logger.debug("Progress update", job_id=str(job_id), progress=progress)
 
     async def on_error(self, job_id: UUID, error: str) -> None:
         """Report job error.
-        
+
         Args:
             job_id: Job identifier.
             error: Error message.
         """
         if self._on_error_callback:
             await self._on_error_callback(job_id, error)
-        
+
         logger.error("Job error reported", job_id=str(job_id), error=error)

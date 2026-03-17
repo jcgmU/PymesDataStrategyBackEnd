@@ -16,7 +16,7 @@ class StorageService(ABC):
         content_type: str | None = None,
     ) -> str:
         """Upload a file to storage.
-        
+
         Returns the storage URL/path.
         """
         ...

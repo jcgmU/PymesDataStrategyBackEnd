@@ -69,7 +69,7 @@ export class MinioStorageService implements StorageService {
 
   constructor(config: MinioStorageConfig) {
     const protocol = config.useSSL ? 'https' : 'http';
-    const endpoint = `${protocol}://${config.endpoint}:${config.port}`;
+    const endpoint = `${protocol}://${config.endpoint}:${String(config.port)}`;
 
     this.client = new S3Client({
       endpoint,
@@ -112,10 +112,10 @@ export class MinioStorageService implements StorageService {
         bucket,
       };
 
-      if (response.ETag) {
+      if (response.ETag !== undefined) {
         result.etag = response.ETag.replace(/"/g, '');
       }
-      if (response.VersionId) {
+      if (response.VersionId !== undefined) {
         result.versionId = response.VersionId;
       }
 
@@ -208,16 +208,16 @@ export class MinioStorageService implements StorageService {
 
       const metadata: ObjectMetadata = {};
 
-      if (response.ContentType) {
+      if (response.ContentType !== undefined) {
         metadata.contentType = response.ContentType;
       }
       if (response.ContentLength !== undefined) {
         metadata.contentLength = response.ContentLength;
       }
-      if (response.LastModified) {
+      if (response.LastModified !== undefined) {
         metadata.lastModified = response.LastModified;
       }
-      if (response.ETag) {
+      if (response.ETag !== undefined) {
         metadata.etag = response.ETag.replace(/"/g, '');
       }
       if (response.Metadata) {
@@ -356,7 +356,7 @@ export class MinioStorageService implements StorageService {
   // ─────────────────────────────────────────────────────────────
 
   private isNotFoundError(error: unknown): boolean {
-    if (error && typeof error === 'object' && 'name' in error) {
+    if (error !== null && error !== undefined && typeof error === 'object' && 'name' in error) {
       const name = (error as { name: string }).name;
       return name === 'NotFound' || name === 'NoSuchKey' || name === '404';
     }

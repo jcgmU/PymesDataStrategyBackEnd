@@ -80,8 +80,8 @@ export class AuthController {
    */
   async getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const userId = req.userId;
-      if (!userId) {
+      const userId = req.userId ?? '';
+      if (userId === '') {
         throw new ValidationError('User ID not found in request', 'userId');
       }
 
@@ -103,8 +103,8 @@ export class AuthController {
    */
   async updateMe(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const userId = req.userId;
-      if (!userId) {
+      const userId = req.userId ?? '';
+      if (userId === '') {
         throw new ValidationError('User ID not found in request', 'userId');
       }
 

@@ -20,6 +20,7 @@ interface ErrorResponse {
  */
 export const errorHandler: ErrorRequestHandler = (err, _req, res, _next): void => {
   // Log the error
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
   logger.error({ err }, 'Request error');
 
   // Handle domain errors

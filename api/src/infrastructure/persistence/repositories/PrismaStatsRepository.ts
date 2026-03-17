@@ -70,7 +70,7 @@ export class PrismaStatsRepository implements IStatsRepository {
     let avgProcessingTimeMs = 0;
     if (completedJobs.length > 0) {
       const totalMs = completedJobs.reduce((sum, job) => {
-        const completed = job.completedAt as Date;
+        const completed = job.completedAt ?? new Date();
         return sum + (completed.getTime() - job.createdAt.getTime());
       }, 0);
       avgProcessingTimeMs = Math.round(totalMs / completedJobs.length);

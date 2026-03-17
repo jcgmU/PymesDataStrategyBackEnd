@@ -18,6 +18,7 @@ export class JwtServiceAdapter implements IJwtService {
   verify(token: string): JwtPayload {
     try {
       const decoded = jwt.verify(token, this.secret);
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (typeof decoded !== 'object' || decoded === null) {
         throw new ValidationError('Invalid token payload');
       }

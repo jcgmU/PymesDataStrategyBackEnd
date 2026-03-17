@@ -60,7 +60,7 @@ export class TransformDatasetUseCase {
     }
 
     // 3. Build unique job ID
-    const jobId = `transform-${input.datasetId}-${input.transformationType.toLowerCase()}-${Date.now()}`;
+    const jobId = `transform-${input.datasetId}-${input.transformationType.toLowerCase()}-${String(Date.now())}`;
 
     // 4. Enqueue job
     const result = await this.jobQueueService.enqueue({

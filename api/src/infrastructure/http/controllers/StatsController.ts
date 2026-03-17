@@ -14,7 +14,7 @@ export class StatsController {
    */
   async getStats(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const userId = req.userId as string;
+      const userId = req.userId ?? '';
 
       const useCase = new GetStatsUseCase(this.container.statsRepository);
       const stats = await useCase.execute(userId);

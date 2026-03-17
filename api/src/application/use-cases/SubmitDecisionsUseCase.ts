@@ -66,7 +66,7 @@ export class SubmitDecisionsUseCase {
     }
 
     // 2. Validate inputs
-    if (!input.decisions || input.decisions.length === 0) {
+    if (input.decisions.length === 0) {
       throw new ValidationError('At least one decision is required', 'decisions');
     }
 
@@ -87,7 +87,7 @@ export class SubmitDecisionsUseCase {
         );
       }
 
-      const decisionId = `dec-${decisionInput.anomalyId}-${Date.now()}`;
+      const decisionId = `dec-${decisionInput.anomalyId}-${String(Date.now())}`;
 
       anomaly.resolve({
         id: decisionId,

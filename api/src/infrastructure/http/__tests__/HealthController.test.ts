@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { Request, Response } from 'express';
 import { HealthController } from '../controllers/HealthController.js';
 import type { Container } from '../../config/container.js';

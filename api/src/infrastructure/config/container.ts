@@ -162,7 +162,7 @@ export class Container {
    */
   async checkRedis(): Promise<boolean> {
     try {
-      const result = await this.redis.ping();
+      const result: string = await this.redis.ping();
       return result === 'PONG';
     } catch {
       return false;

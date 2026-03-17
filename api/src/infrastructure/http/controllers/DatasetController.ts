@@ -380,7 +380,7 @@ export class DatasetController {
       const result = await useCase.execute({
         datasetId: id,
         userId,
-        decisions: decisions as Array<{ anomalyId: string; action: 'APPROVED' | 'CORRECTED' | 'DISCARDED'; correction?: string }>,
+        decisions: decisions as { anomalyId: string; action: 'APPROVED' | 'CORRECTED' | 'DISCARDED'; correction?: string }[],
       });
 
       res.status(201).json({

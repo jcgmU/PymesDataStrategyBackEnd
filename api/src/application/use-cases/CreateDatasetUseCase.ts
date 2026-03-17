@@ -121,6 +121,6 @@ export class CreateDatasetUseCase {
   private generateStorageKey(datasetId: string, originalFileName: string): string {
     const timestamp = Date.now();
     const sanitizedFileName = originalFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
-    return `${datasetId}/${timestamp}_${sanitizedFileName}`;
+    return `${datasetId}/${String(timestamp)}_${sanitizedFileName}`;
   }
 }

@@ -17,7 +17,7 @@ export const createDatasetSchema = z.object({
     .string()
     .optional()
     .transform((val) => {
-      if (!val) return undefined;
+      if (val === undefined || val === '') return undefined;
       try {
         return JSON.parse(val) as Record<string, unknown>;
       } catch {

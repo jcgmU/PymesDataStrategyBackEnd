@@ -354,9 +354,10 @@ describe('DatasetController', () => {
       );
     });
 
-    it('should filter by userId when provided', async () => {
+    it('should filter by userId from JWT (req.userId)', async () => {
       mockReq = {
-        query: { userId: 'user-123' },
+        query: {},
+        userId: 'user-123',
       };
 
       mockDatasetRepository.findAll.mockResolvedValue([]);
@@ -365,6 +366,21 @@ describe('DatasetController', () => {
 
       expect(mockDatasetRepository.findAll).toHaveBeenCalledWith(
         expect.objectContaining({ userId: 'user-123' })
+      );
+    });
+
+    it('should ignore userId query param (security: userId comes from JWT only)', async () => {
+      mockReq = {
+        query: { userId: 'attacker-id' },
+        userId: 'real-user-123',
+      };
+
+      mockDatasetRepository.findAll.mockResolvedValue([]);
+
+      await controller.list(mockReq as Request, mockRes as Response, mockNext);
+
+      expect(mockDatasetRepository.findAll).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'real-user-123' })
       );
     });
   });

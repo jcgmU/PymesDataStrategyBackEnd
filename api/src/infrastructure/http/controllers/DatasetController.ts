@@ -6,6 +6,7 @@ import { TransformDatasetUseCase } from '../../../application/use-cases/Transfor
 import { GetDownloadUrlUseCase } from '../../../application/use-cases/GetDownloadUrlUseCase.js';
 import { GetAnomaliesUseCase } from '../../../application/use-cases/GetAnomaliesUseCase.js';
 import { SubmitDecisionsUseCase } from '../../../application/use-cases/SubmitDecisionsUseCase.js';
+import { ParseInstructionUseCase } from '../../../application/use-cases/ParseInstructionUseCase.js';
 import {
   createDatasetSchema,
   isAllowedMimeType,
@@ -284,6 +285,55 @@ export class DatasetController {
   }
 
   /**
+   * GET /api/v1/datasets/:id/stream
+   * Stream the dataset file directly through the API.
+   * Accepts auth token via ?token= query param so window.open() works.
+   */
+  async stream(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = req.params['id'] as string;
+
+      if (!id) {
+        throw new ValidationError('Dataset ID is required', 'id');
+      }
+
+      const dataset = await this.container.datasetRepository.findById(
+        DatasetId.fromString(id)
+      );
+
+      if (!dataset) {
+        res.status(404).json({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: `Dataset with ID ${id} not found`,
+          },
+        });
+        return;
+      }
+
+      const isProcessed = dataset.storageKey.startsWith('processed/');
+      const bucket = isProcessed ? 'results' : 'datasets';
+
+      const fileStream = await this.container.storage.download(bucket, dataset.storageKey);
+
+      res.setHeader('Content-Type', dataset.mimeType);
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="${dataset.originalFileName}"`
+      );
+
+      fileStream.pipe(res);
+
+      fileStream.on('error', (err) => {
+        next(err);
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * GET /api/v1/datasets/:id/download
    * Generate a signed download URL for a dataset file.
    */
@@ -353,6 +403,56 @@ export class DatasetController {
   }
 
   /**
+   * POST /api/v1/datasets/:id/anomalies/:anomalyId/parse-instruction
+   * Parse a natural language instruction into a validated IR tree (preview, no persist).
+   */
+  async parseInstruction(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const datasetId = req.params['id'] as string;
+      const anomalyId = req.params['anomalyId'] as string;
+
+      if (!datasetId) {
+        throw new ValidationError('Dataset ID is required', 'id');
+      }
+      if (!anomalyId) {
+        throw new ValidationError('Anomaly ID is required', 'anomalyId');
+      }
+
+      const body = req.body as { instruction?: unknown };
+      const instruction = body.instruction;
+
+      if (typeof instruction !== 'string' || instruction.trim() === '') {
+        throw new ValidationError('instruction must be a non-empty string', 'instruction');
+      }
+
+      const userId = req.userId ?? getStringHeader(req.headers['x-user-id'], 'anonymous');
+
+      const useCase = new ParseInstructionUseCase(
+        this.container.anomalyRepository,
+        this.container.datasetRepository
+      );
+
+      const result = await useCase.execute({
+        datasetId,
+        anomalyId,
+        instruction,
+        userId,
+      });
+
+      // isParseError check — errors have an 'error' field
+      if ('error' in result) {
+        const status = result.error === 'invalid_instruction' ? 400 : 422;
+        res.status(status).json(result);
+        return;
+      }
+
+      res.json(result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * POST /api/v1/datasets/:id/decisions
    * Submit human decisions for anomalies (HITL flow).
    */
@@ -374,13 +474,21 @@ export class DatasetController {
 
       const useCase = new SubmitDecisionsUseCase(
         this.container.anomalyRepository,
-        this.container.datasetRepository
+        this.container.datasetRepository,
+        this.container.jobQueue
       );
 
       const result = await useCase.execute({
         datasetId: id,
         userId,
-        decisions: decisions as { anomalyId: string; action: 'APPROVED' | 'CORRECTED' | 'DISCARDED'; correction?: string }[],
+        decisions: decisions as {
+          anomalyId: string;
+          action: 'APPROVED' | 'CORRECTED' | 'DISCARDED';
+          correction?: string;
+          correctionIr?: unknown;
+          irSource?: string;
+          irRawText?: string;
+        }[],
       });
 
       res.status(201).json({

@@ -7,6 +7,9 @@ export interface AnomalyDecision {
   anomalyId: string;
   action: DecisionAction;
   correction: string | null;
+  correctionIr: Record<string, unknown> | null;
+  irSource: string | null;
+  irRawText: string | null;
   userId: string;
   createdAt: Date;
 }
@@ -20,6 +23,7 @@ export interface AnomalyProps {
   description: string;
   originalValue: string | null;
   suggestedValue: string | null;
+  aiSuggestion: string | null;
   status: AnomalyStatus;
   createdAt: Date;
   updatedAt: Date;
@@ -35,10 +39,11 @@ export class Anomaly {
   private constructor(private readonly props: AnomalyProps) {}
 
   static create(
-    props: Omit<AnomalyProps, 'status' | 'createdAt' | 'updatedAt' | 'decision'>
+    props: Omit<AnomalyProps, 'status' | 'createdAt' | 'updatedAt' | 'decision' | 'aiSuggestion'>
   ): Anomaly {
     return new Anomaly({
       ...props,
+      aiSuggestion: null,
       status: 'PENDING',
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -80,6 +85,15 @@ export class Anomaly {
 
   get suggestedValue(): string | null {
     return this.props.suggestedValue;
+  }
+
+  get aiSuggestion(): string | null {
+    return this.props.aiSuggestion;
+  }
+
+  setAiSuggestion(suggestion: string): void {
+    this.props.aiSuggestion = suggestion;
+    this.props.updatedAt = new Date();
   }
 
   get status(): AnomalyStatus {

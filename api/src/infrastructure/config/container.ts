@@ -72,6 +72,7 @@ export class Container {
         bucketDatasets: this.env.MINIO_BUCKET_DATASETS,
         bucketResults: this.env.MINIO_BUCKET_RESULTS,
         bucketTemp: this.env.MINIO_BUCKET_TEMP,
+        publicEndpoint: this.env.MINIO_PUBLIC_ENDPOINT,
       });
     }
     return this.storageInstance;

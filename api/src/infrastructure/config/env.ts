@@ -27,6 +27,9 @@ const envSchema = z.object({
   MINIO_BUCKET_DATASETS: z.string().default('datasets'),
   MINIO_BUCKET_RESULTS: z.string().default('results'),
   MINIO_BUCKET_TEMP: z.string().default('temp'),
+  // Public-facing endpoint for presigned URLs (browser-accessible).
+  // Example: http://localhost:9000
+  MINIO_PUBLIC_ENDPOINT: z.string().optional(),
 
   // JWT
   JWT_SECRET: z.string().min(1, 'JWT_SECRET is required'),
@@ -34,6 +37,14 @@ const envSchema = z.object({
 
   // Logging
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+
+  // Gemini (NL instruction parser)
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-2.0-flash-exp'),
+  INSTRUCTION_PARSER_ENABLED: z
+    .string()
+    .transform((val) => val !== 'false')
+    .default('true'),
 });
 
 export type Env = z.infer<typeof envSchema>;

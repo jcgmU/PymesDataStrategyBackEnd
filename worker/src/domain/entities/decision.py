@@ -1,6 +1,6 @@
 """Decision domain entity."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -17,6 +17,8 @@ class DecisionEntity:
     correction: str | None
     user_id: str
     created_at: datetime
+    correction_ir: dict | None = field(default=None)  # IR tree (new field)
+    ir_source: str | None = field(default=None)       # "rule" | "gemini" (new field)
 
     @property
     def is_approved(self) -> bool:

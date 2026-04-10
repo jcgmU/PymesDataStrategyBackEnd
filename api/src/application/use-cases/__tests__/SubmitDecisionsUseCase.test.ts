@@ -65,7 +65,13 @@ describe('SubmitDecisionsUseCase', () => {
       exists: vi.fn(),
     };
 
-    useCase = new SubmitDecisionsUseCase(mockAnomalyRepository, mockDatasetRepository);
+    const mockJobQueueService = {
+      enqueue: vi.fn().mockResolvedValue({ jobId: 'test-job', status: 'queued' }),
+      getStatus: vi.fn(),
+      cancel: vi.fn(),
+    };
+
+    useCase = new SubmitDecisionsUseCase(mockAnomalyRepository, mockDatasetRepository, mockJobQueueService);
   });
 
   it('should resolve anomalies and return results', async () => {
@@ -203,5 +209,123 @@ describe('SubmitDecisionsUseCase', () => {
         decisions: [{ anomalyId: 'anomaly-1', action: 'APPROVED' }],
       })
     ).rejects.toThrow(ValidationError);
+  });
+
+  // ── IR fields extension ───────────────────────────────────────────────
+
+  it('should persist correctionIr, irSource, irRawText when correctionIr is valid', async () => {
+    const dataset = makeDataset();
+    const anomaly = makeAnomaly('anomaly-ir-1');
+
+    vi.mocked(mockDatasetRepository.findById).mockResolvedValue(dataset);
+    vi.mocked(mockAnomalyRepository.findById).mockResolvedValue(anomaly);
+    vi.mocked(mockAnomalyRepository.save).mockResolvedValue(undefined);
+
+    const validIr = { op: 'FILL_AGGREGATE', agg: 'median' };
+
+    const result = await useCase.execute({
+      datasetId: DATASET_ID,
+      userId: 'user-123',
+      decisions: [
+        {
+          anomalyId: 'anomaly-ir-1',
+          action: 'CORRECTED',
+          correctionIr: validIr,
+          irSource: 'rule',
+          irRawText: 'usa la mediana',
+        },
+      ],
+    });
+
+    expect(result.resolved).toBe(1);
+    expect(anomaly.decision?.correctionIr).toEqual(validIr);
+    expect(anomaly.decision?.irSource).toBe('rule');
+    expect(anomaly.decision?.irRawText).toBe('usa la mediana');
+  });
+
+  it('should throw ValidationError when correctionIr is invalid (server-side re-validation)', async () => {
+    const dataset = makeDataset();
+    const anomaly = makeAnomaly('anomaly-ir-bad');
+
+    vi.mocked(mockDatasetRepository.findById).mockResolvedValue(dataset);
+    vi.mocked(mockAnomalyRepository.findById).mockResolvedValue(anomaly);
+
+    const maliciousIr = { op: 'EXECUTE_CODE', code: 'rm -rf /' };
+
+    await expect(
+      useCase.execute({
+        datasetId: DATASET_ID,
+        userId: 'user-123',
+        decisions: [
+          {
+            anomalyId: 'anomaly-ir-bad',
+            action: 'CORRECTED',
+            correctionIr: maliciousIr,
+            irSource: 'gemini',
+            irRawText: 'algo malicioso',
+          },
+        ],
+      })
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it('should handle mixed batch — legacy decision + IR decision', async () => {
+    const dataset = makeDataset();
+    const legacyAnomaly = makeAnomaly('anomaly-legacy');
+    const irAnomaly = makeAnomaly('anomaly-with-ir');
+
+    vi.mocked(mockDatasetRepository.findById).mockResolvedValue(dataset);
+    vi.mocked(mockAnomalyRepository.findById)
+      .mockResolvedValueOnce(legacyAnomaly)
+      .mockResolvedValueOnce(irAnomaly);
+    vi.mocked(mockAnomalyRepository.save).mockResolvedValue(undefined);
+
+    const validIr = { op: 'DELETE_ROWS' };
+
+    const result = await useCase.execute({
+      datasetId: DATASET_ID,
+      userId: 'user-123',
+      decisions: [
+        // Legacy: plain correction string
+        { anomalyId: 'anomaly-legacy', action: 'CORRECTED', correction: '0' },
+        // IR-based
+        {
+          anomalyId: 'anomaly-with-ir',
+          action: 'CORRECTED',
+          correctionIr: validIr,
+          irSource: 'rule',
+          irRawText: 'elimina las filas',
+        },
+      ],
+    });
+
+    expect(result.resolved).toBe(2);
+
+    // Legacy anomaly should have correction string, no IR
+    expect(legacyAnomaly.decision?.correction).toBe('0');
+    expect(legacyAnomaly.decision?.correctionIr).toBeNull();
+
+    // IR anomaly should have IR, no correction string
+    expect(irAnomaly.decision?.correctionIr).toEqual(validIr);
+    expect(irAnomaly.decision?.irSource).toBe('rule');
+  });
+
+  it('should pass null correctionIr fields for legacy decisions (no IR)', async () => {
+    const dataset = makeDataset();
+    const anomaly = makeAnomaly('anomaly-legacy-2');
+
+    vi.mocked(mockDatasetRepository.findById).mockResolvedValue(dataset);
+    vi.mocked(mockAnomalyRepository.findById).mockResolvedValue(anomaly);
+    vi.mocked(mockAnomalyRepository.save).mockResolvedValue(undefined);
+
+    await useCase.execute({
+      datasetId: DATASET_ID,
+      userId: 'user-123',
+      decisions: [{ anomalyId: 'anomaly-legacy-2', action: 'CORRECTED', correction: 'N/A' }],
+    });
+
+    expect(anomaly.decision?.correctionIr).toBeNull();
+    expect(anomaly.decision?.irSource).toBeNull();
+    expect(anomaly.decision?.irRawText).toBeNull();
   });
 });

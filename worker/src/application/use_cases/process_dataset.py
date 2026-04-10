@@ -1,15 +1,19 @@
 """Process Dataset use case - orchestrates ETL pipeline with HITL support."""
 
 import asyncio
+import os
 from contextlib import suppress
 from dataclasses import dataclass, field
 from io import BytesIO
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
+
 import polars as pl
 import structlog
 
+from src.application.ir import IRExecutionError, IRExecutor, IRResult
 from src.application.transformations import (
     DataTransformer,
     TransformationType,
@@ -195,9 +199,17 @@ class ProcessDatasetUseCase:
                     )
 
             # ---------------------------------------------------------------
-            # Step 5: Detect anomalies
+            # Step 5: Detect anomalies or load existing
             # ---------------------------------------------------------------
-            anomalies = self._detect_anomalies(df, dataset_id_str)
+            anomalies = []
+            if self._job_repo is not None:
+                anomalies = await self._job_repo.get_anomalies(dataset_id_str)
+            
+            is_new_anomalies = False
+            if not anomalies:
+                anomalies = self._detect_anomalies(df, dataset_id_str)
+                is_new_anomalies = bool(anomalies)
+
             anomalies_detected = len(anomalies)
             decisions_applied = 0
 
@@ -207,11 +219,17 @@ class ProcessDatasetUseCase:
             if anomalies and self._job_repo is not None:
                 log.info("Anomalies detected — entering HITL flow", count=anomalies_detected)
 
-                # 6a. Save anomalies to DB
-                await self._job_repo.save_anomalies(dataset_id_str, anomalies)
+                # 6a. Save anomalies to DB only if they are newly detected
+                if is_new_anomalies:
+                    await self._job_repo.save_anomalies(dataset_id_str, anomalies)
 
                 # 6b. Update job → AWAITING_REVIEW
                 await self._update_status(job_id_str, JobStatus.AWAITING_REVIEW)
+
+                # 6b+. Notify n8n to generate AI suggestions (fire-and-forget)
+                asyncio.create_task(
+                    self._notify_n8n_for_suggestions(dataset_id_str, anomalies, df)
+                )
 
                 # 6c. Poll until all decisions are in
                 df, decisions_applied = await self._wait_for_decisions_and_apply(
@@ -348,25 +366,51 @@ class ProcessDatasetUseCase:
         """
         anomalies: list[AnomalyEntity] = []
 
-        # Missing values
+        # Missing values (grouped by column to avoid hundreds of individual anomalies)
+        _numeric_fill_dtypes = (
+            pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+            pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+            pl.Float32, pl.Float64,
+        )
+        _string_fill_dtypes = (pl.Utf8, pl.String, pl.Categorical)
+
         for col in df.columns:
             null_mask = df[col].is_null()
-            null_indices = [i for i, v in enumerate(null_mask.to_list()) if v]
-            for row_idx in null_indices:
+            null_count = null_mask.sum()
+
+            if null_count > 0:
+                non_null = df[col].drop_nulls()
+                dtype = df[col].dtype
+
+                if dtype in _numeric_fill_dtypes:
+                    if non_null.len() == 0:
+                        fill_value = "0"
+                    else:
+                        mean_val = non_null.cast(pl.Float64).mean()
+                        fill_value = str(mean_val)
+                elif dtype in _string_fill_dtypes or dtype == pl.Boolean:
+                    if non_null.len() == 0:
+                        fill_value = ""
+                    else:
+                        counts = non_null.value_counts(sort=True)
+                        fill_value = str(counts[col][0])
+                else:
+                    fill_value = "null"
+
                 anomalies.append(
                     AnomalyEntity.create(
                         id=str(uuid4()),
                         dataset_id=dataset_id,
                         column=col,
-                        row=row_idx,
+                        row=int(str(null_count)),  # Store the count of affected rows in the 'row' field for grouping
                         anomaly_type="MISSING_VALUE",
-                        description=f"Null value in column '{col}' at row {row_idx}",
+                        description=f"Null values in column '{col}'",
                         original_value=None,
-                        suggested_value=None,
+                        suggested_value=fill_value,
                     )
                 )
 
-        # Outliers (numeric only — Z-score > 3)
+        # Outliers (numeric only — Z-score > 3, grouped by column)
         numeric_dtypes = (
             pl.Int8, pl.Int16, pl.Int32, pl.Int64,
             pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
@@ -382,28 +426,30 @@ class ProcessDatasetUseCase:
             std = series.std()
             if std is None or std == 0:
                 continue
-            mean_f = float(mean)  # type: ignore[arg-type]
-            std_f = float(std)  # type: ignore[arg-type]
-            for row_idx, val in enumerate(df[col].to_list()):
-                if val is None:
-                    continue
-                z = abs((float(val) - mean_f) / std_f)
-                if z > 3.0:
-                    anomalies.append(
-                        AnomalyEntity.create(
-                            id=str(uuid4()),
-                            dataset_id=dataset_id,
-                            column=col,
-                            row=row_idx,
-                            anomaly_type="OUTLIER",
-                            description=(
-                                f"Outlier in column '{col}' at row {row_idx}: "
-                                f"z-score={z:.2f}"
-                            ),
-                            original_value=str(val),
-                            suggested_value=str(mean),
-                        )
+            
+            mean_f = float(str(mean))  # type: ignore[arg-type]
+            std_f = float(str(std))  # type: ignore[arg-type]
+            
+            # Calculate z-scores using polars expressions for speed
+            z_scores = ((df[col].cast(pl.Float64) - mean_f).abs() / std_f)
+            outliers_mask = z_scores > 3.0
+            outliers_count = int(str(outliers_mask.sum()))
+            
+            if outliers_count > 0:
+                anomalies.append(
+                    AnomalyEntity.create(
+                        id=str(uuid4()),
+                        dataset_id=dataset_id,
+                        column=col,
+                        row=int(str(outliers_count)),  # Store the count of affected rows in the 'row' field
+                        anomaly_type="OUTLIER",
+                        description=(
+                            f"Outliers detected in column '{col}'"
+                        ),
+                        original_value=None,
+                        suggested_value=str(mean),
                     )
+                )
 
         return anomalies
 
@@ -415,49 +461,147 @@ class ProcessDatasetUseCase:
     ) -> pl.DataFrame:
         """Apply human decisions to the DataFrame.
 
-        Decision semantics:
-        - APPROVED  → keep the row as-is (no change)
-        - CORRECTED → replace the anomalous cell with DecisionEntity.correction
-        - DISCARDED → drop the row entirely
+        Anomalies are grouped by column (one anomaly per affected column), so
+        decisions must be applied to ALL rows affected by that column anomaly:
 
-        Rows with DISCARDED decisions are removed; CORRECTED cells are updated.
+        - APPROVED  → keep as-is (no change)
+        - CORRECTED → fill every affected cell in the column with the correction value
+        - DISCARDED → drop every row that has an affected cell in the column
+
+        For MISSING_VALUE: affected rows = rows where the column is null.
+        For OUTLIER:       affected rows = rows where |z-score| > 3.
         """
         if not decisions:
             return df
 
-        # Build lookup: anomaly_id → decision
         decision_map: dict[str, DecisionEntity] = {d.anomaly_id: d for d in decisions}
-        # Build lookup: anomaly_id → AnomalyEntity
         anomaly_map: dict[str, AnomalyEntity] = {a.id: a for a in anomalies}
 
+        result = df
         rows_to_drop: set[int] = set()
-        corrections: dict[int, dict[str, Any]] = {}  # {row_idx: {col: new_val}}
 
         for anomaly_id, decision in decision_map.items():
             anomaly = anomaly_map.get(anomaly_id)
-            if anomaly is None or anomaly.row is None:
+            if anomaly is None:
                 continue
 
-            if decision.is_discarded:
-                rows_to_drop.add(anomaly.row)
-            elif decision.is_corrected and decision.correction is not None:
-                corrections.setdefault(anomaly.row, {})[anomaly.column] = decision.correction
+            col = anomaly.column
+            if col not in result.columns:
+                continue
 
-        # Apply corrections (before dropping rows so indices stay stable)
-        result = df
-        for row_idx, col_values in corrections.items():
-            for col, new_val in col_values.items():
-                if col not in result.columns:
-                    continue
-                # Build a new series with the corrected value,
-                # casting the correction string to the column's native type.
-                col_data = result[col].to_list()
-                col_data[row_idx] = self._cast_correction(new_val, result[col].dtype)
-                result = result.with_columns(
-                    pl.Series(col, col_data, dtype=result[col].dtype)
+            # ── Find affected row indices based on anomaly type ──────────────
+            affected_rows: list[int] = []
+
+            if anomaly.type == "MISSING_VALUE":
+                null_mask = result[col].is_null().to_list()
+                affected_rows = [i for i, is_null in enumerate(null_mask) if is_null]
+
+            elif anomaly.type == "OUTLIER":
+                numeric_dtypes = (
+                    pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+                    pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+                    pl.Float32, pl.Float64,
                 )
+                if result[col].dtype not in numeric_dtypes:
+                    continue
+                series = result[col].cast(pl.Float64).drop_nulls()
+                if series.len() < 4:
+                    continue
+                mean_v = float(series.mean())  # type: ignore[arg-type]
+                std_v = float(series.std())    # type: ignore[arg-type]
+                if std_v == 0:
+                    continue
+                z_scores = ((result[col].cast(pl.Float64) - mean_v).abs() / std_v).to_list()
+                affected_rows = [i for i, z in enumerate(z_scores) if z is not None and z > 3.0]
 
-        # Drop discarded rows
+            if not affected_rows:
+                continue
+
+            # ── Apply decision to all affected rows ──────────────────────────
+            if decision.is_discarded:
+                rows_to_drop.update(affected_rows)
+
+            elif decision.is_corrected and decision.correction_ir is not None:
+                # ── IR path (new): execute structured IR tree ────────────────
+                try:
+                    ir_result = IRExecutor(result, anomaly, affected_rows).execute(
+                        decision.correction_ir
+                    )
+                except IRExecutionError as exc:
+                    logger.warning(
+                        "ir_execution_failed",
+                        error=str(exc),
+                        anomaly_id=anomaly.id,
+                    )
+                    continue
+
+                if ir_result.result_type == IRResult.DELETE:
+                    rows_to_drop.update(affected_rows)
+
+                elif ir_result.result_type == IRResult.FILL:
+                    col_data = result[col].to_list()
+                    if ir_result.scalar_value is not None or (
+                        ir_result.per_row_values is None
+                    ):
+                        # scalar broadcast
+                        for row_idx in affected_rows:
+                            col_data[row_idx] = ir_result.scalar_value
+                    else:
+                        # per-row values
+                        for row_idx, v in zip(affected_rows, ir_result.per_row_values):
+                            col_data[row_idx] = v
+                    try:
+                        result = result.with_columns(
+                            pl.Series(col, col_data, dtype=result[col].dtype)
+                        )
+                    except Exception:
+                        structlog.get_logger().warning(
+                            "ir_fill_type_mismatch_skipped",
+                            col=col,
+                            affected_rows=affected_rows,
+                            dtype=str(result[col].dtype),
+                        )
+                # IRResult.KEEP → no-op
+
+            elif decision.is_corrected and decision.correction is not None:
+                col_data = result[col].to_list()
+                casted = self._cast_correction(decision.correction, result[col].dtype)
+                for row_idx in affected_rows:
+                    col_data[row_idx] = casted
+                try:
+                    result = result.with_columns(
+                        pl.Series(col, col_data, dtype=result[col].dtype)
+                    )
+                except Exception:
+                    structlog.get_logger().warning(
+                        "correction_type_mismatch_skipped",
+                        col=col,
+                        affected_rows=affected_rows,
+                        value=decision.correction,
+                        dtype=str(result[col].dtype),
+                    )
+
+            elif decision.is_approved:
+                # Apply the anomaly's pre-calculated suggested value
+                if anomaly.suggested_value is not None:
+                    col_data = result[col].to_list()
+                    casted = self._cast_correction(anomaly.suggested_value, result[col].dtype)
+                    for row_idx in affected_rows:
+                        col_data[row_idx] = casted
+                    try:
+                        result = result.with_columns(
+                            pl.Series(col, col_data, dtype=result[col].dtype)
+                        )
+                    except Exception:
+                        structlog.get_logger().warning(
+                            "approved_suggestion_type_mismatch_skipped",
+                            col=col,
+                            affected_rows=affected_rows,
+                            value=anomaly.suggested_value,
+                            dtype=str(result[col].dtype),
+                        )
+
+        # Drop discarded rows (applied after all corrections so indices stay stable)
         if rows_to_drop:
             keep_mask = [i not in rows_to_drop for i in range(result.height)]
             result = result.filter(pl.Series("_keep", keep_mask))
@@ -480,7 +624,7 @@ class ProcessDatasetUseCase:
         float_types = (pl.Float32, pl.Float64)
         with suppress(ValueError, TypeError):
             if dtype in integer_types:
-                return int(value)
+                return int(float(value))
             if dtype in float_types:
                 return float(value)
         return value
@@ -488,6 +632,80 @@ class ProcessDatasetUseCase:
     # =========================================================================
     # Private: status helpers
     # =========================================================================
+
+    async def _notify_n8n_for_suggestions(
+        self,
+        dataset_id: str,
+        anomalies: list[AnomalyEntity],
+        df: pl.DataFrame | None = None,
+    ) -> None:
+        """Call n8n webhook to trigger Gemini AI suggestions for detected anomalies.
+
+        Fire-and-forget: errors are logged but do not affect the HITL flow.
+
+        If the DataFrame is provided, the payload is enriched with `dtype` and
+        `sampleValues` per anomaly so the downstream Gemini prompt has real
+        column context (required by the v4 workflow's JSON-structured prompt).
+        """
+        webhook_url = os.environ.get("N8N_SUGGESTIONS_WEBHOOK_URL", "")
+        if not webhook_url:
+            logger.debug("N8N_SUGGESTIONS_WEBHOOK_URL not set — skipping AI suggestion trigger")
+            return
+
+        def _column_context(col: str) -> tuple[str, list[str]]:
+            if df is None or col not in df.columns:
+                return "unknown", []
+            dtype_str = str(df[col].dtype)
+            try:
+                samples = df[col].drop_nulls().head(5).to_list()
+                sample_strs = [str(v) for v in samples if v is not None]
+            except Exception:
+                sample_strs = []
+            return dtype_str, sample_strs
+
+        payload_anomalies = []
+        for a in anomalies[:20]:  # limit to 20 like the API does
+            dtype_str, sample_values = _column_context(a.column)
+            payload_anomalies.append(
+                {
+                    "id": a.id,
+                    "type": a.type,
+                    "column": a.column,
+                    "row": a.row,
+                    "description": a.description,
+                    "originalValue": a.original_value,
+                    "suggestedValue": a.suggested_value,
+                    "dtype": dtype_str,
+                    "sampleValues": sample_values,
+                }
+            )
+
+        payload = {
+            "datasetId": dataset_id,
+            "anomalies": payload_anomalies,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(webhook_url, json=payload)
+                if resp.status_code >= 400:
+                    logger.warning(
+                        "n8n webhook returned error",
+                        status=resp.status_code,
+                        dataset_id=dataset_id,
+                    )
+                else:
+                    logger.info(
+                        "n8n notified for AI suggestions",
+                        dataset_id=dataset_id,
+                        anomalies_count=len(payload["anomalies"]),
+                    )
+        except Exception as exc:
+            logger.warning(
+                "Failed to notify n8n for AI suggestions",
+                dataset_id=dataset_id,
+                error=str(exc),
+            )
 
     async def _update_status(
         self,
@@ -563,8 +781,5 @@ class ProcessDatasetUseCase:
 
     def _parse_storage_path(self, source_key: str) -> tuple[str, str]:
         """Parse storage path into bucket and key."""
-        if "/" in source_key:
-            parts = source_key.split("/", 1)
-            if "." not in parts[0]:
-                return parts[0], parts[1]
+        # Always return datasets bucket because source_key from API is the object key
         return "datasets", source_key

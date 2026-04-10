@@ -214,6 +214,7 @@ model Anomaly {
   description    String
   originalValue  String?       @map("original_value")
   suggestedValue String?       @map("suggested_value")
+  aiSuggestion   String?       @map("ai_suggestion")
   status         AnomalyStatus @default(PENDING)
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
@@ -225,13 +226,16 @@ model Anomaly {
 }
 
 model Decision {
-  id          String         @id @default(cuid())
-  anomalyId   String         @unique @map("anomaly_id")
-  anomaly     Anomaly        @relation(fields: [anomalyId], references: [id], onDelete: Cascade)
-  action      DecisionAction
-  correction  String?
-  userId      String         @map("user_id")
-  createdAt   DateTime       @default(now()) @map("created_at")
+  id            String         @id @default(cuid())
+  anomalyId     String         @unique @map("anomaly_id")
+  anomaly       Anomaly        @relation(fields: [anomalyId], references: [id], onDelete: Cascade)
+  action        DecisionAction
+  correction    String?
+  correctionIr  Json?          @map("correction_ir")
+  irSource      String?        @map("ir_source")
+  irRawText     String?        @map("ir_raw_text")
+  userId        String         @map("user_id")
+  createdAt     DateTime       @default(now()) @map("created_at")
 
   @@map("decisions")
 }

@@ -200,6 +200,31 @@ class SQLAlchemyJobRepository(JobRepository):
             count=len(anomalies),
         )
 
+    async def get_anomalies(self, dataset_id: str) -> list[AnomalyEntity]:
+        """Fetch all anomalies for the dataset."""
+        async with self._session_factory() as session:
+            stmt = select(AnomalyModel).where(AnomalyModel.dataset_id == dataset_id)
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+            
+            anomalies = []
+            for row in rows:
+                anomalies.append(
+                    AnomalyEntity(
+                        id=row.id,
+                        dataset_id=row.dataset_id,
+                        column=row.column,
+                        row=row.row,
+                        type=row.type,
+                        description=row.description,
+                        original_value=row.original_value,
+                        suggested_value=row.suggested_value,
+                        status=row.status,
+                        created_at=row.created_at,
+                    )
+                )
+            return anomalies
+
     async def get_decisions(self, dataset_id: str) -> list[DecisionEntity]:
         """Return all decisions for anomalies belonging to dataset_id."""
         async with self._session_factory() as session:
@@ -258,6 +283,17 @@ class SQLAlchemyJobRepository(JobRepository):
 
     def _decision_model_to_entity(self, model: DecisionModel) -> DecisionEntity:
         """Convert a DecisionModel ORM row to a domain entity."""
+        # correction_ir and ir_source may not exist if the DB migration hasn't run yet.
+        try:
+            correction_ir = model.correction_ir
+        except AttributeError:
+            correction_ir = None
+
+        try:
+            ir_source = model.ir_source
+        except AttributeError:
+            ir_source = None
+
         return DecisionEntity(
             id=model.id,
             anomaly_id=model.anomaly_id,
@@ -265,4 +301,6 @@ class SQLAlchemyJobRepository(JobRepository):
             correction=model.correction,
             user_id=model.user_id,
             created_at=model.created_at or datetime.now(UTC),
+            correction_ir=correction_ir,
+            ir_source=ir_source,
         )

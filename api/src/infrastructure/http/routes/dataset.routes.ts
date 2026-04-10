@@ -216,6 +216,11 @@ export function createDatasetRoutes(container: Container): Router {
     controller.download(req, res, next).catch(next);
   });
 
+  // GET /api/v1/datasets/:id/stream - Stream file directly through API (supports ?token= auth)
+  router.get('/:id/stream', (req, res, next) => {
+    controller.stream(req, res, next).catch(next);
+  });
+
   /**
    * @openapi
    * /datasets/{id}/transform:
@@ -435,6 +440,60 @@ export function createDatasetRoutes(container: Container): Router {
    *             schema:
    *               $ref: '#/components/schemas/ErrorResponse'
    */
+  /**
+   * @openapi
+   * /datasets/{id}/anomalies/{anomalyId}/parse-instruction:
+   *   post:
+   *     tags:
+   *       - Datasets
+   *       - HITL
+   *     summary: Parse a natural language instruction into a validated IR tree
+   *     description: |
+   *       Converts a free-text Spanish instruction (e.g. "usa la mediana") into
+   *       a validated IR node tree. Does NOT persist anything — used for preview.
+   *       Rule-based parsing is tried first; Gemini is used as fallback.
+   *     security:
+   *       - bearerAuth: []
+   *     parameters:
+   *       - in: path
+   *         name: id
+   *         required: true
+   *         schema:
+   *           type: string
+   *         description: Dataset ID
+   *       - in: path
+   *         name: anomalyId
+   *         required: true
+   *         schema:
+   *           type: string
+   *         description: Anomaly ID
+   *     requestBody:
+   *       required: true
+   *       content:
+   *         application/json:
+   *           schema:
+   *             type: object
+   *             required:
+   *               - instruction
+   *             properties:
+   *               instruction:
+   *                 type: string
+   *                 example: "usa la mediana"
+   *     responses:
+   *       '200':
+   *         description: Instruction parsed successfully — IR + preview returned
+   *       '400':
+   *         description: Invalid instruction (column not found, type incompatibility, etc.)
+   *       '422':
+   *         description: Gemini unavailable or parse failure
+   *       '404':
+   *         description: Dataset or anomaly not found
+   */
+  // POST /api/v1/datasets/:id/anomalies/:anomalyId/parse-instruction
+  router.post('/:id/anomalies/:anomalyId/parse-instruction', (req, res, next) => {
+    controller.parseInstruction(req, res, next).catch(next);
+  });
+
   // POST /api/v1/datasets/:id/decisions - Submit human decisions (HITL)
   router.post('/:id/decisions', (req, res, next) => {
     controller.submitDecisions(req, res, next).catch(next);

@@ -143,17 +143,44 @@ export class GenerateReportUseCase {
       return 'Informe generado sin IA — configura GEMINI_API_KEY para habilitar la narrativa automática.';
     }
 
-    const prompt = `Eres un analista de datos senior. Redacta un informe ejecutivo en español (2-3 párrafos, tono profesional) sobre el proceso de limpieza del dataset "${stats.datasetName}".
+    const TYPE_LABELS: Record<string, string> = {
+      MISSING_VALUE: 'Valores faltantes', DUPLICATE: 'Duplicados',
+      FORMAT_INVALID: 'Formato inválido', FORMAT_ERROR: 'Error de formato',
+      OUTLIER: 'Valores atípicos', INCONSISTENT: 'Inconsistentes',
+      WHITESPACE_ONLY: 'Celdas vacías (espacios)', SUSPICIOUS_PLACEHOLDER: 'Marcadores de posición',
+      LEADING_TRAILING_WHITESPACE: 'Espacios al inicio/fin', DATE_LOGICAL: 'Fechas incoherentes',
+      NUMERIC_ROUND_NUMBER: 'Números redondos sospechosos', LOW_VARIANCE: 'Baja variación',
+      OUTLIER_IQR: 'Outliers IQR', SEQUENCE_GAP: 'Huecos en secuencia',
+      CROSS_FIELD_SWAP: 'Dato en campo incorrecto',
+    };
+    const ACTION_LABELS: Record<string, string> = {
+      APPROVED: 'aprobadas sin cambio', CORRECTED: 'corregidas',
+      DISCARDED: 'eliminadas', PENDING: 'pendientes',
+    };
+    const typeLines = Object.entries(stats.byType)
+      .map(([type, data]) =>
+        `  - ${TYPE_LABELS[type] ?? type}: ${data.count} columna(s) → ${ACTION_LABELS[data.action] ?? data.action}`
+      )
+      .join('\n');
 
-Datos del proceso:
+    const prompt = `Eres un analista de datos senior. Redacta un informe ejecutivo en español sobre el proceso de limpieza del dataset "${stats.datasetName}".
+
+Resultados del proceso:
 - Total de anomalías detectadas: ${stats.totalAnomalies}
 - Aprobadas sin cambio: ${stats.approved}
 - Corregidas manualmente: ${stats.corrected}
 - Filas eliminadas: ${stats.discarded}
-- Pendientes: ${stats.pending}
-- Distribución por tipo: ${JSON.stringify(stats.byType)}
+- Pendientes sin resolver: ${stats.pending}
 
-Menciona los tipos de anomalías más frecuentes, las correcciones aplicadas y el impacto esperado en la calidad de los datos.`;
+Detalle por tipo de anomalía:
+${typeLines}
+
+INSTRUCCIONES IMPORTANTES:
+- Escribe exactamente 3 párrafos separados por una línea en blanco.
+- Usa SOLO texto plano. Sin asteriscos, sin markdown, sin negritas, sin guiones como viñetas.
+- Primer párrafo: resumen general del volumen y tipos de anomalías encontradas.
+- Segundo párrafo: describe las correcciones más relevantes aplicadas y por qué mejoran la calidad.
+- Tercer párrafo: impacto esperado en la calidad del dataset tras la limpieza.`;
 
     try {
       return await this.callGemini(prompt);

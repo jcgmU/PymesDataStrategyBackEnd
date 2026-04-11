@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # Worker
     worker_concurrency: int = Field(default=2, ge=1, le=10)
 
+    # n8n / AI suggestions (legacy — kept as fallback)
+    n8n_suggestions_webhook_url: str = ""
+    n8n_webhook_secret: str = "pymes-n8n-secret-2024"
+
+    # Gemini direct integration
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash-exp"
+
     @property
     def redis_url(self) -> str:
         """Build Redis URL from components."""

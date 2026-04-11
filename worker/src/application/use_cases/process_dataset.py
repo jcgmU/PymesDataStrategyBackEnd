@@ -23,6 +23,7 @@ from src.application.transformations import (
 from src.domain.entities.anomaly import AnomalyEntity
 from src.domain.entities.decision import DecisionEntity
 from src.domain.ports.repositories.job_repository import JobRepository
+from src.domain.ports.services.ai_suggestion_service import AiSuggestionService
 from src.domain.ports.services.storage_service import StorageService
 from src.domain.value_objects.job_status import JobStatus
 from src.infrastructure.parsers.dataset_parser import (
@@ -97,6 +98,7 @@ class ProcessDatasetUseCase:
         job_repository: JobRepository | None = None,
         hitl_poll_interval: float = _HITL_POLL_INTERVAL_SECONDS,
         hitl_max_wait: float = _HITL_MAX_WAIT_SECONDS,
+        ai_suggestion_service: AiSuggestionService | None = None,
     ) -> None:
         """Initialize the use case.
 
@@ -109,6 +111,11 @@ class ProcessDatasetUseCase:
                             If None, HITL and status updates are skipped.
             hitl_poll_interval: Seconds between polling for decisions.
             hitl_max_wait: Maximum seconds to wait for human decisions.
+            ai_suggestion_service: Optional AI suggestion service. When
+                                   provided, suggestions are generated directly
+                                   from the worker (Opción C). When ``None``
+                                   the legacy n8n webhook path is used as
+                                   fallback (if configured).
         """
         self._storage = storage
         self._parser = parser or DatasetParser()
@@ -117,6 +124,7 @@ class ProcessDatasetUseCase:
         self._job_repo = job_repository
         self._hitl_poll_interval = hitl_poll_interval
         self._hitl_max_wait = hitl_max_wait
+        self._ai_suggestion_service = ai_suggestion_service
 
     async def execute(self, input_data: ProcessDatasetInput) -> ProcessDatasetOutput:
         """Execute the dataset processing pipeline.
@@ -226,10 +234,17 @@ class ProcessDatasetUseCase:
                 # 6b. Update job → AWAITING_REVIEW
                 await self._update_status(job_id_str, JobStatus.AWAITING_REVIEW)
 
-                # 6b+. Notify n8n to generate AI suggestions (fire-and-forget)
-                asyncio.create_task(
-                    self._notify_n8n_for_suggestions(dataset_id_str, anomalies, df)
-                )
+                # 6b+. Generate AI suggestions (fire-and-forget)
+                # Opción C: call Gemini directly from the worker when the service
+                # is configured; fall back to the legacy n8n webhook otherwise.
+                if self._ai_suggestion_service is not None:
+                    asyncio.create_task(
+                        self._generate_ai_suggestions(anomalies, df, job_id_str)
+                    )
+                else:
+                    asyncio.create_task(
+                        self._notify_n8n_for_suggestions(dataset_id_str, anomalies, df)
+                    )
 
                 # 6c. Poll until all decisions are in
                 df, decisions_applied = await self._wait_for_decisions_and_apply(
@@ -632,6 +647,55 @@ class ProcessDatasetUseCase:
     # =========================================================================
     # Private: status helpers
     # =========================================================================
+
+    async def _generate_ai_suggestions(
+        self,
+        anomalies: list[AnomalyEntity],
+        df: pl.DataFrame,
+        job_id: str,
+    ) -> None:
+        """Generate AI suggestions directly via Gemini and persist them to DB.
+
+        Opción C: the worker calls Gemini directly using the AiSuggestionService
+        port, which has access to the full DataFrame (real Polars dtypes,
+        statistics, sample values) — context that n8n never has.
+
+        Fire-and-forget: errors per anomaly are logged but do not abort the job.
+        """
+        if self._ai_suggestion_service is None or self._job_repo is None:
+            return
+
+        log = logger.bind(job_id=job_id, anomalies_count=len(anomalies))
+        log.info("Generating AI suggestions via Gemini")
+
+        for anomaly in anomalies:
+            try:
+                suggestion = await self._ai_suggestion_service.generate_suggestion(anomaly, df)
+                if suggestion is None:
+                    logger.debug(
+                        "No AI suggestion returned",
+                        anomaly_id=anomaly.id,
+                        column=anomaly.column,
+                    )
+                    continue
+
+                await self._job_repo.save_ai_suggestion(
+                    anomaly_id=anomaly.id,
+                    action_type=suggestion.action_type,
+                    value=suggestion.value,
+                    reason=suggestion.reason,
+                )
+                logger.info(
+                    "AI suggestion saved",
+                    anomaly_id=anomaly.id,
+                    action_type=suggestion.action_type,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "AI suggestion failed for anomaly",
+                    anomaly_id=anomaly.id,
+                    error=str(exc),
+                )
 
     async def _notify_n8n_for_suggestions(
         self,

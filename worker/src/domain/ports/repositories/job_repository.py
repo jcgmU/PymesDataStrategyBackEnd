@@ -60,6 +60,18 @@ class JobRepository(ABC):
         ...
 
     @abstractmethod
+    async def get_anomalies(self, dataset_id: str) -> list[AnomalyEntity]:
+        """Return all anomalies associated with *dataset_id*.
+
+        Args:
+            dataset_id: The dataset whose anomalies are requested.
+
+        Returns:
+            List of anomaly entities.
+        """
+        ...
+
+    @abstractmethod
     async def get_decisions(self, dataset_id: str) -> list[DecisionEntity]:
         """Return all decisions for anomalies associated with *dataset_id*.
 
@@ -85,5 +97,27 @@ class JobRepository(ABC):
 
         Returns:
             Number of PENDING anomalies (0 means all have been reviewed).
+        """
+        ...
+
+    @abstractmethod
+    async def save_ai_suggestion(
+        self,
+        anomaly_id: str,
+        action_type: str,
+        value: str | None,
+        reason: str,
+    ) -> None:
+        """Persist an AI-generated suggestion for an anomaly.
+
+        Stores a JSON-encoded suggestion in the ``ai_suggestion`` column of the
+        ``anomalies`` table.  The format matches the contract established in
+        Wave 2:  ``{"actionType": "...", "value": "...", "reason": "..."}``.
+
+        Args:
+            anomaly_id: Primary key of the anomaly to update.
+            action_type: Suggested action — ``"FILL"``, ``"DELETE"``, or ``"KEEP"``.
+            value: Correction value string, or ``None`` when not applicable.
+            reason: Human-readable explanation in Spanish.
         """
         ...

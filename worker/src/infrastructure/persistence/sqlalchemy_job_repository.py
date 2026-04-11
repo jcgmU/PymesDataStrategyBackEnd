@@ -254,6 +254,37 @@ class SQLAlchemyJobRepository(JobRepository):
             count = result.scalar_one()
             return int(count)
 
+    async def save_ai_suggestion(
+        self,
+        anomaly_id: str,
+        action_type: str,
+        value: str | None,
+        reason: str,
+    ) -> None:
+        """Persist an AI-generated suggestion in the anomaly's ``ai_suggestion`` column.
+
+        The value is stored as a JSON string matching the Wave 2 contract:
+        ``{"actionType": "...", "value": "...", "reason": "..."}``.
+        """
+        suggestion_json = json.dumps(
+            {"actionType": action_type, "value": value, "reason": reason},
+            ensure_ascii=False,
+        )
+        async with self._session_factory() as session:
+            stmt = (
+                update(AnomalyModel)
+                .where(AnomalyModel.id == anomaly_id)
+                .values(ai_suggestion=suggestion_json)
+            )
+            await session.execute(stmt)
+            await session.commit()
+
+        logger.info(
+            "AI suggestion saved",
+            anomaly_id=anomaly_id,
+            action_type=action_type,
+        )
+
     # ------------------------------------------------------------------
     # Private mapping helpers
     # ------------------------------------------------------------------

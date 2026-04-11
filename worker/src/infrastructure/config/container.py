@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, AsyncSession
 
 from src.application.transformations import DataTransformer
 from src.application.use_cases.process_dataset import ProcessDatasetUseCase
+from src.domain.ports.services.ai_suggestion_service import AiSuggestionService
 from src.infrastructure.config.settings import Settings, get_settings
 from src.infrastructure.parsers.dataset_parser import DatasetParser
 from src.infrastructure.persistence.database import create_engine, create_session_factory
@@ -35,6 +36,7 @@ class Container:
     _db_engine: AsyncEngine | None = field(default=None, repr=False)
     _session_factory: async_sessionmaker[AsyncSession] | None = field(default=None, repr=False)
     _job_repository: SQLAlchemyJobRepository | None = field(default=None, repr=False)
+    _ai_suggestion_service: AiSuggestionService | None = field(default=None, repr=False)
 
     @property
     def storage(self) -> MinioStorageService:
@@ -79,6 +81,22 @@ class Container:
         return self._job_repository
 
     @property
+    def ai_suggestion_service(self) -> AiSuggestionService | None:
+        """Get the AI suggestion service (lazy initialization).
+
+        Returns ``None`` gracefully if ``GEMINI_API_KEY`` is not configured,
+        so the worker can run without AI suggestions in environments where the
+        key is absent.
+        """
+        if self._ai_suggestion_service is None and self.settings.gemini_api_key:
+            from src.infrastructure.ai.gemini_suggestion_service import GeminiSuggestionService
+            self._ai_suggestion_service = GeminiSuggestionService(
+                api_key=self.settings.gemini_api_key,
+                model_name=self.settings.gemini_model,
+            )
+        return self._ai_suggestion_service
+
+    @property
     def process_dataset_use_case(self) -> ProcessDatasetUseCase:
         """Get ProcessDataset use case (lazy initialization)."""
         if self._process_dataset_use_case is None:
@@ -86,8 +104,9 @@ class Container:
                 storage=self.storage,
                 parser=self.parser,
                 transformer=self.transformer,
-                output_bucket=self.settings.minio_processed_bucket,
+                output_bucket=self.settings.minio_bucket_results,
                 job_repository=self.job_repository,
+                ai_suggestion_service=self.ai_suggestion_service,
             )
         return self._process_dataset_use_case
 

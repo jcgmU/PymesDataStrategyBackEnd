@@ -13,13 +13,19 @@ export class PrismaStatsRepository implements IStatsRepository {
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
     // Run all queries in parallel for performance
+    // NOTE: TransformationJob records are never persisted to PostgreSQL (jobs live
+    // only in BullMQ/Redis). We derive job metrics from the `datasets` table instead:
+    //   totalJobs       → datasets that have been processed (status != PENDING)
+    //   jobsCompleted   → datasets in READY status
+    //   jobsFailed      → datasets in ERROR status
+    //   avgProcessingTimeMs → mean of (processedAt - createdAt) for READY datasets
     const [
       totalDatasets,
       datasetsThisMonth,
       totalJobs,
       jobsCompleted,
       jobsFailed,
-      completedJobs,
+      processedDatasets,
       pendingReviews,
     ] = await Promise.all([
       // Total datasets owned by user
@@ -35,31 +41,34 @@ export class PrismaStatsRepository implements IStatsRepository {
         },
       }),
 
-      // Total jobs
-      this.prisma.transformationJob.count({
-        where: { userId },
-      }),
-
-      // Jobs with status COMPLETED
-      this.prisma.transformationJob.count({
-        where: { userId, status: 'COMPLETED' },
-      }),
-
-      // Jobs with status FAILED
-      this.prisma.transformationJob.count({
-        where: { userId, status: 'FAILED' },
-      }),
-
-      // Completed jobs with both createdAt and completedAt to compute duration
-      this.prisma.transformationJob.findMany({
+      // Datasets that have been submitted for processing (not still PENDING)
+      this.prisma.dataset.count({
         where: {
           userId,
-          status: 'COMPLETED',
-          completedAt: { not: null },
+          status: { not: 'PENDING' },
+        },
+      }),
+
+      // Datasets successfully processed
+      this.prisma.dataset.count({
+        where: { userId, status: 'READY' },
+      }),
+
+      // Datasets that failed processing
+      this.prisma.dataset.count({
+        where: { userId, status: 'ERROR' },
+      }),
+
+      // READY datasets with processedAt to compute average processing duration
+      this.prisma.dataset.findMany({
+        where: {
+          userId,
+          status: 'READY',
+          processedAt: { not: null },
         },
         select: {
           createdAt: true,
-          completedAt: true,
+          processedAt: true,
         },
       }),
 
@@ -74,12 +83,12 @@ export class PrismaStatsRepository implements IStatsRepository {
 
     // Calculate average processing time in milliseconds
     let avgProcessingTimeMs = 0;
-    if (completedJobs.length > 0) {
-      const totalMs = completedJobs.reduce((sum, job) => {
-        const completed = job.completedAt ?? new Date();
-        return sum + (completed.getTime() - job.createdAt.getTime());
+    if (processedDatasets.length > 0) {
+      const totalMs = processedDatasets.reduce((sum, ds) => {
+        const completed = ds.processedAt ?? new Date();
+        return sum + (completed.getTime() - ds.createdAt.getTime());
       }, 0);
-      avgProcessingTimeMs = Math.round(totalMs / completedJobs.length);
+      avgProcessingTimeMs = Math.round(totalMs / processedDatasets.length);
     }
 
     return {

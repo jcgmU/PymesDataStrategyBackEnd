@@ -651,6 +651,484 @@ class ProcessDatasetUseCase:
                 )
             )
 
+        # ── 7. WHITESPACE_ONLY ────────────────────────────────────────────────
+        try:
+            for col in df.columns:
+                if df[col].dtype not in _string_fill_dtypes:
+                    continue
+                non_null = df[col].drop_nulls()
+                if non_null.len() == 0:
+                    continue
+                whitespace_mask = non_null.str.strip_chars().str.len_chars() == 0
+                ws_count = int(str(whitespace_mask.sum()))
+                if ws_count == 0:
+                    continue
+                example = str(non_null.filter(whitespace_mask)[0])
+                anomalies.append(
+                    AnomalyEntity.create(
+                        id=str(uuid4()),
+                        dataset_id=dataset_id,
+                        column=col,
+                        row=ws_count,
+                        anomaly_type="WHITESPACE_ONLY",
+                        description=(
+                            f"La columna '{col}' tiene {ws_count} celda(s) con solo "
+                            f"espacios/tabuladores/saltos de línea. Parecen llenas pero "
+                            f"están vacías funcionalmente."
+                        ),
+                        original_value=repr(example),
+                        suggested_value=None,
+                    )
+                )
+        except Exception:
+            pass
+
+        # ── 8. CROSS_FIELD_SWAP ───────────────────────────────────────────────
+        try:
+            import re as _re
+            _name_kw = ("nombre", "name", "apellido", "surname", "fullname", "first_name", "last_name")
+            _date_pattern_re = _re.compile(
+                r"^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$"
+                r"|^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$"
+            )
+            _phone_digit_re = _re.compile(r"^[\+\s\-\(\)]*\d[\d\s\-\.\(\)]{6,19}$")
+
+            for col in df.columns:
+                if df[col].dtype not in _string_fill_dtypes:
+                    continue
+                col_lower = col.lower()
+                non_null = df[col].drop_nulls()
+                if non_null.len() == 0:
+                    continue
+
+                swap_type: str | None = None
+                swap_count = 0
+                example_val: str | None = None
+
+                is_name_col = any(kw in col_lower for kw in _name_kw)
+                is_phone_col = any(kw in col_lower for kw in _phone_kw)
+
+                if is_name_col:
+                    email_mask = non_null.str.contains(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+                    email_count = int(str(email_mask.sum()))
+                    if email_count > 0:
+                        swap_type = "EMAIL_EN_NOMBRE"
+                        swap_count = email_count
+                        example_val = str(non_null.filter(email_mask)[0])
+
+                    if swap_type is None:
+                        sample = non_null.head(500).to_list()
+                        date_hits = [v for v in sample if v and _date_pattern_re.match(str(v))]
+                        if date_hits:
+                            swap_type = "FECHA_EN_NOMBRE"
+                            swap_count = len(date_hits)
+                            example_val = date_hits[0]
+
+                if swap_type is None and not is_phone_col:
+                    sample = non_null.head(500).to_list()
+                    phone_hits = [
+                        v for v in sample
+                        if v and _phone_digit_re.match(str(v).strip())
+                        and len(_re.sub(r"\D", "", str(v))) >= 7
+                    ]
+                    if phone_hits and len(phone_hits) / max(len(sample), 1) > 0.1:
+                        swap_type = "TELEFONO_EN_COLUMNA_INCORRECTA"
+                        swap_count = len(phone_hits)
+                        example_val = phone_hits[0]
+
+                if swap_type is None:
+                    continue
+
+                anomalies.append(
+                    AnomalyEntity.create(
+                        id=str(uuid4()),
+                        dataset_id=dataset_id,
+                        column=col,
+                        row=swap_count,
+                        anomaly_type="CROSS_FIELD_SWAP",
+                        description=(
+                            f"La columna '{col}' parece contener datos del tipo incorrecto "
+                            f"({swap_type}): {swap_count} valor(es) parecen pertenecer a otro campo. "
+                            f"Ejemplo: '{example_val}'"
+                        ),
+                        original_value=example_val,
+                        suggested_value=None,
+                    )
+                )
+        except Exception:
+            pass
+
+        # ── 9. SUSPICIOUS_PLACEHOLDER ─────────────────────────────────────────
+        try:
+            _PLACEHOLDERS = frozenset({
+                "n/a", "na", "null", "none", "undefined",
+                "pendiente", "tbd", "todo", "s/d", "sin dato", "sin datos",
+                "desconocido", "unknown", "0000", "xxxxxx",
+                "campo en blanco", "véase otra columna", "ver otra columna",
+                "no aplica", "no disponible",
+            })
+
+            for col in df.columns:
+                if df[col].dtype not in _string_fill_dtypes:
+                    continue
+                non_null = df[col].drop_nulls()
+                if non_null.len() == 0:
+                    continue
+                normalized = non_null.str.strip_chars().str.to_lowercase()
+                placeholder_mask = normalized.is_in(list(_PLACEHOLDERS))
+                ph_count = int(str(placeholder_mask.sum()))
+                if ph_count == 0:
+                    continue
+                example = str(non_null.filter(placeholder_mask)[0])
+                anomalies.append(
+                    AnomalyEntity.create(
+                        id=str(uuid4()),
+                        dataset_id=dataset_id,
+                        column=col,
+                        row=ph_count,
+                        anomaly_type="SUSPICIOUS_PLACEHOLDER",
+                        description=(
+                            f"La columna '{col}' tiene {ph_count} valor(es) que son "
+                            f"marcadores de posición o sustitutos vacíos (ej: 'N/A', 'pendiente', "
+                            f"'desconocido'). Ejemplo: '{example}'"
+                        ),
+                        original_value=example,
+                        suggested_value=None,
+                    )
+                )
+        except Exception:
+            pass
+
+        # ── 10. LEADING_TRAILING_WHITESPACE ───────────────────────────────────
+        try:
+            for col in df.columns:
+                if df[col].dtype not in _string_fill_dtypes:
+                    continue
+                non_null = df[col].drop_nulls()
+                if non_null.len() == 0:
+                    continue
+                stripped = non_null.str.strip_chars()
+                has_content = stripped.str.len_chars() > 0
+                has_padding = non_null != stripped
+                padding_mask = has_content & has_padding
+                pad_count = int(str(padding_mask.sum()))
+                if pad_count == 0:
+                    continue
+                example_raw = str(non_null.filter(padding_mask)[0])
+                example_fixed = str(stripped.filter(padding_mask)[0])
+                anomalies.append(
+                    AnomalyEntity.create(
+                        id=str(uuid4()),
+                        dataset_id=dataset_id,
+                        column=col,
+                        row=pad_count,
+                        anomaly_type="LEADING_TRAILING_WHITESPACE",
+                        description=(
+                            f"La columna '{col}' tiene {pad_count} valor(es) con espacios "
+                            f"al inicio o al final, lo que puede romper joins y búsquedas. "
+                            f"Ejemplo: {repr(example_raw)}"
+                        ),
+                        original_value=example_raw,
+                        suggested_value=example_fixed,
+                    )
+                )
+        except Exception:
+            pass
+
+        # ── 11. DATE_LOGICAL ──────────────────────────────────────────────────
+        try:
+            _START_KW = ("nacimiento", "birth", "inicio", "start", "alta", "apertura", "desde", "from")
+            # "alta" also acts as an end marker relative to "nacimiento" (birth→registration)
+            _END_KW   = ("vencimiento", "expiry", "expiracion", "fin", "end", "alta", "baja", "cierre", "hasta")
+
+            import re as _re
+
+            def _col_tokens(col_name: str):
+                """Split column name into lowercase word tokens to avoid substring false matches."""
+                return set(_re.split(r"[\s_\-]+", col_name.lower()))
+
+            _date_col_dtypes = (pl.Date, pl.Datetime)
+            date_cols = [c for c in df.columns if df[c].dtype in _date_col_dtypes]
+
+            if len(date_cols) >= 2:
+                start_cols = [c for c in date_cols if any(kw in _col_tokens(c) for kw in _START_KW)]
+                end_cols   = [c for c in date_cols if any(kw in _col_tokens(c) for kw in _END_KW)]
+
+                if not start_cols or not end_cols:
+                    # Without clear keyword signals, skip to avoid false positives
+                    start_cols = []
+                    end_cols   = []
+
+                for sc in start_cols:
+                    for ec in end_cols:
+                        if sc == ec:
+                            continue
+                        both_non_null = df[sc].is_not_null() & df[ec].is_not_null()
+                        sub = df.filter(both_non_null)
+                        if sub.height == 0:
+                            continue
+                        sc_date = sub[sc].cast(pl.Date)
+                        ec_date = sub[ec].cast(pl.Date)
+                        inversion_mask = sc_date > ec_date
+                        inv_count = int(str(inversion_mask.sum()))
+                        if inv_count == 0:
+                            continue
+                        example_start = str(sub[sc].filter(inversion_mask)[0])
+                        example_end   = str(sub[ec].filter(inversion_mask)[0])
+                        anomalies.append(
+                            AnomalyEntity.create(
+                                id=str(uuid4()),
+                                dataset_id=dataset_id,
+                                column=sc,
+                                row=inv_count,
+                                anomaly_type="DATE_LOGICAL",
+                                description=(
+                                    f"Inconsistencia lógica de fechas: '{sc}' es posterior a '{ec}' "
+                                    f"en {inv_count} fila(s). Se esperaba que '{sc}' fuera anterior. "
+                                    f"Ejemplo: {sc}={example_start}, {ec}={example_end}"
+                                ),
+                                original_value=f"{sc}={example_start} | {ec}={example_end}",
+                                suggested_value=None,
+                            )
+                        )
+        except Exception:
+            pass
+
+        # ── 12. NUMERIC_ROUND_NUMBER ──────────────────────────────────────────
+        try:
+            for col in df.columns:
+                if df[col].dtype not in _numeric_fill_dtypes:
+                    continue
+                col_lower = col.lower()
+                if any(kw in col_lower for kw in _id_kw):
+                    continue
+                series = df[col].cast(pl.Float64).drop_nulls()
+                n = series.len()
+                if n < 10:
+                    continue
+                mean_val = series.mean()
+                std_val  = series.std()
+                if mean_val is None or std_val is None or float(str(mean_val)) == 0:
+                    continue
+                mean_f = float(str(mean_val))
+                std_f  = float(str(std_val))
+                if std_f < abs(mean_f) * 0.1:
+                    continue
+                divisor = 1000.0 if abs(mean_f) >= 1000 else 100.0
+                round_mask = (series % divisor) == 0.0
+                round_count = int(str(round_mask.sum()))
+                round_ratio = round_count / n
+                if round_ratio <= 0.40:
+                    continue
+                example = str(series.filter(round_mask)[0])
+                anomalies.append(
+                    AnomalyEntity.create(
+                        id=str(uuid4()),
+                        dataset_id=dataset_id,
+                        column=col,
+                        row=round_count,
+                        anomaly_type="NUMERIC_ROUND_NUMBER",
+                        description=(
+                            f"La columna '{col}' tiene {round_count} valor(es) ({round_ratio:.0%}) "
+                            f"que son múltiplos exactos de {int(divisor)}, lo que sugiere "
+                            f"estimaciones o datos ficticios. Ejemplo: '{example}'"
+                        ),
+                        original_value=example,
+                        suggested_value=None,
+                    )
+                )
+        except Exception:
+            pass
+
+        # ── 13. LOW_VARIANCE ──────────────────────────────────────────────────
+        try:
+            for col in df.columns:
+                col_lower = col.lower()
+                if any(kw in col_lower for kw in _id_kw):
+                    continue
+
+                dtype = df[col].dtype
+
+                if dtype in _numeric_fill_dtypes:
+                    series = df[col].cast(pl.Float64).drop_nulls()
+                    if series.len() <= 10:
+                        continue
+                    mean_val = series.mean()
+                    std_val  = series.std()
+                    if mean_val is None or std_val is None:
+                        continue
+                    mean_f = float(str(mean_val))
+                    std_f  = float(str(std_val))
+                    if mean_f == 0:
+                        continue
+                    cv = std_f / abs(mean_f)
+                    if cv >= 0.01:
+                        continue
+                    anomalies.append(
+                        AnomalyEntity.create(
+                            id=str(uuid4()),
+                            dataset_id=dataset_id,
+                            column=col,
+                            row=series.len(),
+                            anomaly_type="LOW_VARIANCE",
+                            description=(
+                                f"La columna numérica '{col}' tiene variación casi nula "
+                                f"(coeficiente de variación={cv:.4f}), lo que puede indicar "
+                                f"que no fue llenada correctamente. Media={mean_f:.4f}"
+                            ),
+                            original_value=str(series[0]),
+                            suggested_value=None,
+                        )
+                    )
+
+                elif dtype in _string_fill_dtypes:
+                    non_null = df[col].drop_nulls()
+                    if non_null.len() <= 10:
+                        continue
+                    total = non_null.len()
+                    vc = non_null.value_counts(sort=True)
+                    top_count = int(str(vc["count"][0]))
+                    top_ratio = top_count / total
+                    if top_ratio < 0.95:
+                        continue
+                    top_value = str(vc[col][0])
+                    anomalies.append(
+                        AnomalyEntity.create(
+                            id=str(uuid4()),
+                            dataset_id=dataset_id,
+                            column=col,
+                            row=total,
+                            anomaly_type="LOW_VARIANCE",
+                            description=(
+                                f"La columna de texto '{col}' tiene el {top_ratio:.0%} de sus "
+                                f"valores idénticos al valor '{top_value}', lo que sugiere que "
+                                f"no fue llenada correctamente."
+                            ),
+                            original_value=top_value,
+                            suggested_value=None,
+                        )
+                    )
+        except Exception:
+            pass
+
+        # ── 14. OUTLIER_IQR ───────────────────────────────────────────────────
+        try:
+            cols_with_zscore_outlier = {
+                a.column for a in anomalies if a.type == "OUTLIER"
+            }
+
+            for col in df.columns:
+                if df[col].dtype not in _numeric_fill_dtypes:
+                    continue
+                if col in cols_with_zscore_outlier:
+                    continue
+                series = df[col].cast(pl.Float64).drop_nulls()
+                if series.len() < 4:
+                    continue
+                q1 = series.quantile(0.25)
+                q3 = series.quantile(0.75)
+                if q1 is None or q3 is None:
+                    continue
+                q1_f = float(str(q1))
+                q3_f = float(str(q3))
+                iqr = q3_f - q1_f
+                if iqr == 0:
+                    continue
+                lower = q1_f - 1.5 * iqr
+                upper = q3_f + 1.5 * iqr
+                outlier_mask = (series < lower) | (series > upper)
+                outlier_count = int(str(outlier_mask.sum()))
+                if outlier_count == 0:
+                    continue
+                median_val = series.median()
+                median_str = str(median_val) if median_val is not None else "None"
+                example = str(series.filter(outlier_mask)[0])
+                anomalies.append(
+                    AnomalyEntity.create(
+                        id=str(uuid4()),
+                        dataset_id=dataset_id,
+                        column=col,
+                        row=outlier_count,
+                        anomaly_type="OUTLIER_IQR",
+                        description=(
+                            f"Outliers por IQR en columna '{col}': {outlier_count} valor(es) "
+                            f"fuera del rango [{lower:.2f}, {upper:.2f}] "
+                            f"(Q1={q1_f:.2f}, Q3={q3_f:.2f}, IQR={iqr:.2f}). "
+                            f"Ejemplo: '{example}'"
+                        ),
+                        original_value=example,
+                        suggested_value=median_str,
+                    )
+                )
+        except Exception:
+            pass
+
+        # ── 15. SEQUENCE_GAP ──────────────────────────────────────────────────
+        try:
+            import re as _re_seq
+            from collections import Counter as _Counter
+            _seq_re = _re_seq.compile(r"^([A-Za-z\-_]*)(\d+)$")
+
+            for col in df.columns:
+                if df[col].dtype not in _string_fill_dtypes:
+                    continue
+                non_null = df[col].drop_nulls()
+                n = non_null.len()
+                if n < 4:
+                    continue
+                unique_ratio = non_null.n_unique() / n
+                if unique_ratio < 0.95:
+                    continue
+
+                values = non_null.to_list()
+                matches = [_seq_re.fullmatch(str(v)) for v in values]
+                valid_matches = [m for m in matches if m is not None]
+                if len(valid_matches) / n < 0.80:
+                    continue
+
+                prefix_counts = _Counter(m.group(1) for m in valid_matches)
+                dominant_prefix, dominant_count = prefix_counts.most_common(1)[0]
+                if dominant_count / n < 0.80:
+                    continue
+
+                dominant_nums = sorted(
+                    int(m.group(2))
+                    for m in valid_matches
+                    if m.group(1) == dominant_prefix
+                )
+                if len(dominant_nums) < 2:
+                    continue
+
+                min_num = dominant_nums[0]
+                max_num = dominant_nums[-1]
+                expected_set = set(range(min_num, max_num + 1))
+                actual_set = set(dominant_nums)
+                gaps = sorted(expected_set - actual_set)
+
+                if not gaps:
+                    continue
+
+                gap_count = len(gaps)
+                first_gap = f"{dominant_prefix}{gaps[0]}"
+                anomalies.append(
+                    AnomalyEntity.create(
+                        id=str(uuid4()),
+                        dataset_id=dataset_id,
+                        column=col,
+                        row=gap_count,
+                        anomaly_type="SEQUENCE_GAP",
+                        description=(
+                            f"La columna '{col}' parece secuencial (prefijo '{dominant_prefix}') "
+                            f"pero tiene {gap_count} hueco(s) entre {dominant_prefix}{min_num} "
+                            f"y {dominant_prefix}{max_num}. Primer hueco: '{first_gap}'"
+                        ),
+                        original_value=first_gap,
+                        suggested_value=None,
+                    )
+                )
+        except Exception:
+            pass
+
         return anomalies
 
     def _apply_decisions(

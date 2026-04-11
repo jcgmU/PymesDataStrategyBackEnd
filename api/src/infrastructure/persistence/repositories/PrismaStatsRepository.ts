@@ -16,6 +16,7 @@ export class PrismaStatsRepository implements IStatsRepository {
     const [
       totalDatasets,
       datasetsThisMonth,
+      totalJobs,
       jobsCompleted,
       jobsFailed,
       completedJobs,
@@ -32,6 +33,11 @@ export class PrismaStatsRepository implements IStatsRepository {
           userId,
           createdAt: { gte: startOfMonth },
         },
+      }),
+
+      // Total jobs
+      this.prisma.transformationJob.count({
+        where: { userId },
       }),
 
       // Jobs with status COMPLETED
@@ -79,6 +85,7 @@ export class PrismaStatsRepository implements IStatsRepository {
     return {
       totalDatasets,
       datasetsThisMonth,
+      totalJobs,
       jobsCompleted,
       jobsFailed,
       avgProcessingTimeMs,

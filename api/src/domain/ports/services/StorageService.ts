@@ -144,6 +144,11 @@ export interface StorageService {
   getDatasetDownloadUrl(key: string, options?: SignedUrlOptions): Promise<string>;
 
   /**
+   * Generate a signed download URL for an object in the results bucket.
+   */
+  getResultDownloadUrl(key: string, options?: SignedUrlOptions): Promise<string>;
+
+  /**
    * Upload to the results bucket.
    */
   uploadToResults(

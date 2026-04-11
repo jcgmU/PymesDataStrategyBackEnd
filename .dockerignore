@@ -2,7 +2,6 @@ node_modules
 api/node_modules
 .git
 .gitignore
-**/*.md
 worker/tests
 worker/.pytest_cache
 worker/__pycache__

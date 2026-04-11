@@ -1,10 +1,12 @@
 // =============================================================================
 // PYMES Data Strategy - API Gateway Entry Point
+// obsidian://open?vault=proyecto&file=Backend-MOC
 // =============================================================================
 
 import 'dotenv/config';
 import { getContainer } from './infrastructure/config/container.js';
 import { createServer, startServer } from './infrastructure/http/server.js';
+import { DatasetStatusSyncListener } from './infrastructure/messaging/bullmq/DatasetStatusSyncListener.js';
 
 async function main(): Promise<void> {
   console.log('PYMES API Gateway starting...');
@@ -15,6 +17,10 @@ async function main(): Promise<void> {
 
   console.log(`Environment: ${config.NODE_ENV}`);
   console.log(`Log level: ${config.LOG_LEVEL}`);
+
+  // Start BullMQ global listener for job completion
+  const jobListener = new DatasetStatusSyncListener(container);
+  jobListener.start();
 
   // Create and start server
   const app = createServer(container);

@@ -56,6 +56,13 @@ export class Container {
         port: this.env.REDIS_PORT,
         maxRetriesPerRequest: null, // Required for BullMQ
         enableReadyCheck: false,
+        keepAlive: 10000,
+        retryStrategy(times) {
+          return Math.min(times * 50, 2000);
+        }
+      });
+      this.redisInstance.on('error', (err) => {
+        console.error('Redis error (main):', err.message);
       });
     }
     return this.redisInstance;
@@ -140,6 +147,13 @@ export class Container {
         port: this.env.REDIS_PORT,
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
+        keepAlive: 10000,
+        retryStrategy(times) {
+          return Math.min(times * 50, 2000);
+        }
+      });
+      redisForEvents.on('error', (err) => {
+        console.error('Redis error (events):', err.message);
       });
       this.queueEventsInstance = new BullMQQueueEvents(redisForEvents);
     }

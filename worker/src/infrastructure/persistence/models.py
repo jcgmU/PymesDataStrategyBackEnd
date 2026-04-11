@@ -21,7 +21,7 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, ENUM
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -40,11 +40,11 @@ class TransformationJobModel(Base):
 
     # Job definition
     transformation_type: Mapped[str] = mapped_column(
-        String, nullable=False
-    )  # TransformationType enum stored as string
+        ENUM("CLEAN_NULLS", "NORMALIZE", "AGGREGATE", "FILTER", "MERGE", "CUSTOM", name="TransformationType", create_type=False), nullable=False
+    )
     status: Mapped[str] = mapped_column(
-        String, nullable=False, default="QUEUED"
-    )  # JobStatus enum stored as string
+        ENUM("QUEUED", "PROCESSING", "COMPLETED", "FAILED", "CANCELLED", name="JobStatus", create_type=False), nullable=False, default="QUEUED"
+    )
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Input parameters (JSONB)
@@ -97,7 +97,9 @@ class DatasetModel(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
+    status: Mapped[str] = mapped_column(
+        ENUM("PENDING", "PROCESSING", "READY", "FAILED", name="DatasetStatus", create_type=False), nullable=False, default="PENDING"
+    )
     original_file_name: Mapped[str] = mapped_column(String, nullable=False)
     storage_key: Mapped[str] = mapped_column(String, nullable=False)
     file_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
@@ -134,7 +136,10 @@ class AnomalyModel(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False)
     original_value: Mapped[str | None] = mapped_column(Text, nullable=True)
     suggested_value: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
+    ai_suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        ENUM("PENDING", "RESOLVED", "IGNORED", name="AnomalyStatus", create_type=False), nullable=False, default="PENDING"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -163,6 +168,9 @@ class DecisionModel(Base):
     )
     action: Mapped[str] = mapped_column(String, nullable=False)  # APPROVED | CORRECTED | DISCARDED
     correction: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # IR fields — added by Plan A migration; may be NULL until migration runs
+    correction_ir: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    ir_source: Mapped[str | None] = mapped_column(String, nullable=True)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

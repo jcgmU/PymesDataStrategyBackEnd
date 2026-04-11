@@ -4,6 +4,7 @@
 export interface Stats {
   totalDatasets: number;
   datasetsThisMonth: number;
+  totalJobs: number;
   jobsCompleted: number;
   jobsFailed: number;
   avgProcessingTimeMs: number;

@@ -97,7 +97,18 @@ class ETLJobProcessor(JobProcessor):
                     output_key=output.output_key,
                 )
 
-            return result
+            # Deep serialize any dates before returning to BullMQ
+            import datetime
+            def _deep_serialize(obj: Any) -> Any:
+                if isinstance(obj, (datetime.date, datetime.datetime)):
+                    return obj.isoformat()
+                if isinstance(obj, dict):
+                    return {k: _deep_serialize(v) for k, v in obj.items()}
+                if isinstance(obj, list):
+                    return [_deep_serialize(v) for v in obj]
+                return obj
+
+            return _deep_serialize(result)
 
         except Exception as e:
             log.error("Job processing error", error=str(e))

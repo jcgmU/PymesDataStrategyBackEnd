@@ -19,18 +19,24 @@ declare global {
 export function createAuthMiddleware(jwtService: IJwtService) {
   return function authMiddleware(req: Request, res: Response, next: NextFunction): void {
     const authHeader = req.headers.authorization;
+    let token: string | undefined;
 
-    if (authHeader?.startsWith('Bearer ') !== true) {
+    if (authHeader?.startsWith('Bearer ') === true) {
+      token = authHeader.slice(7); // Remove "Bearer " prefix
+    } else if (typeof req.query['token'] === 'string') {
+      // Support SSE where token is passed in query
+      token = req.query['token'];
+    }
+
+    if (!token || token.length === 0) {
       res.status(401).json({
         error: {
           code: 'UNAUTHORIZED',
-          message: 'Authorization header is required',
+          message: 'Authorization header or token parameter is required',
         },
       });
       return;
     }
-
-    const token = authHeader.slice(7); // Remove "Bearer " prefix
 
     try {
       const payload = jwtService.verify(token);

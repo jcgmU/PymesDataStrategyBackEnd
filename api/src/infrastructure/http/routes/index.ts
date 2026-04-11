@@ -5,6 +5,8 @@ import { createDatasetRoutes } from './dataset.routes.js';
 import { createJobRoutes } from './job.routes.js';
 import { createAuthRoutes } from './auth.routes.js';
 import { createStatsRoutes } from './stats.routes.js';
+import { createWebhookRoutes } from './webhook.routes.js';
+import { createEventsRoutes } from './events.routes.js';
 import { createAuthMiddleware } from '../middleware/AuthMiddleware.js';
 
 /**
@@ -28,6 +30,12 @@ export function createRoutes(container: Container): Router {
 
   // Stats routes (protected)
   router.use('/api/v1/stats', requireAuth, createStatsRoutes(container));
+
+  // Global workspace SSE events (protected)
+  router.use('/api/v1/events', requireAuth, createEventsRoutes(container));
+
+  // Webhook routes (public — protected by shared secret)
+  router.use('/api/v1/webhooks', createWebhookRoutes(container));
 
   return router;
 }

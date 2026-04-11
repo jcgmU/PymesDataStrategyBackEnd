@@ -79,7 +79,21 @@ export class BullMQJobQueueService implements JobQueueService {
       priority: payload.priority ?? 5,
     };
 
-    await this.queue.add(payload.transformationType, payload, jobOptions);
+    let attempt = 0;
+    while (true) {
+      try {
+        await this.queue.add(payload.transformationType, payload, jobOptions);
+        break;
+      } catch (error: any) {
+        if (error?.message?.includes('Connection is closed') && attempt < 3) {
+          attempt++;
+          // wait before retrying (50ms, 100ms, 150ms)
+          await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+          continue;
+        }
+        throw error;
+      }
+    }
 
     return {
       jobId: payload.jobId,
@@ -91,7 +105,21 @@ export class BullMQJobQueueService implements JobQueueService {
    * Get the status of a job.
    */
   async getStatus(jobId: string): Promise<JobResult | null> {
-    const job = await this.queue.getJob(jobId);
+    let attempt = 0;
+    let job: JobLike | undefined;
+    while (true) {
+      try {
+        job = await this.queue.getJob(jobId);
+        break;
+      } catch (error: any) {
+        if (error?.message?.includes('Connection is closed') && attempt < 3) {
+          attempt++;
+          await new Promise((resolve) => setTimeout(resolve, attempt * 50));
+          continue;
+        }
+        throw error;
+      }
+    }
 
     if (!job) {
       return null;

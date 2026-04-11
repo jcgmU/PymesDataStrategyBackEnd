@@ -29,6 +29,9 @@ export interface MinioStorageConfig {
   bucketDatasets: string;
   bucketResults: string;
   bucketTemp: string;
+  /** Public-facing endpoint for presigned URLs (e.g. http://localhost:9000).
+   *  If omitted, falls back to the internal endpoint. */
+  publicEndpoint?: string;
 }
 
 /**
@@ -63,22 +66,35 @@ export class StorageError extends Error {
  */
 export class MinioStorageService implements StorageService {
   private readonly client: S3Client;
+  private readonly presignClient: S3Client;
   private readonly bucketDatasets: string;
   private readonly bucketResults: string;
   private readonly bucketTemp: string;
 
   constructor(config: MinioStorageConfig) {
     const protocol = config.useSSL ? 'https' : 'http';
-    const endpoint = `${protocol}://${config.endpoint}:${String(config.port)}`;
+    const internalEndpoint = `${protocol}://${config.endpoint}:${String(config.port)}`;
+    const publicEndpoint = config.publicEndpoint ?? internalEndpoint;
+
+    const credentials = {
+      accessKeyId: config.accessKey,
+      secretAccessKey: config.secretKey,
+    };
 
     this.client = new S3Client({
-      endpoint,
-      region: 'us-east-1', // MinIO ignores this but SDK requires it
-      credentials: {
-        accessKeyId: config.accessKey,
-        secretAccessKey: config.secretKey,
-      },
-      forcePathStyle: true, // Required for MinIO
+      endpoint: internalEndpoint,
+      region: 'us-east-1',
+      credentials,
+      forcePathStyle: true,
+    });
+
+    // Separate client used only for presigned URL generation.
+    // Uses the public endpoint so URLs are browser-accessible.
+    this.presignClient = new S3Client({
+      endpoint: publicEndpoint,
+      region: 'us-east-1',
+      credentials,
+      forcePathStyle: true,
     });
 
     this.bucketDatasets = config.bucketDatasets;
@@ -251,7 +267,7 @@ export class MinioStorageService implements StorageService {
         Key: key,
       });
 
-      return await getSignedUrl(this.client, command, {
+      return await getSignedUrl(this.presignClient, command, {
         expiresIn: options?.expiresInSeconds ?? 3600,
       });
     } catch (error) {
@@ -274,7 +290,7 @@ export class MinioStorageService implements StorageService {
         ContentType: options?.contentType,
       });
 
-      return await getSignedUrl(this.client, command, {
+      return await getSignedUrl(this.presignClient, command, {
         expiresIn: options?.expiresInSeconds ?? 3600,
       });
     } catch (error) {
@@ -315,6 +331,10 @@ export class MinioStorageService implements StorageService {
 
   async getDatasetDownloadUrl(key: string, options?: SignedUrlOptions): Promise<string> {
     return this.getSignedDownloadUrl(this.bucketDatasets, key, options);
+  }
+
+  async getResultDownloadUrl(key: string, options?: SignedUrlOptions): Promise<string> {
+    return this.getSignedDownloadUrl(this.bucketResults, key, options);
   }
 
   async uploadToResults(

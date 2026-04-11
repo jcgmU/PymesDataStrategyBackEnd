@@ -50,10 +50,11 @@ export class GetDownloadUrlUseCase {
     const expiresIn = input.expiresInSeconds ?? DEFAULT_DOWNLOAD_URL_EXPIRY_SECONDS;
 
     // 2. Generate signed download URL
-    const downloadUrl = await this.storageService.getDatasetDownloadUrl(
-      dataset.storageKey,
-      { expiresInSeconds: expiresIn }
-    );
+    // Processed files are stored in the results bucket under the "processed/" prefix.
+    const isProcessed = dataset.storageKey.startsWith('processed/');
+    const downloadUrl = isProcessed
+      ? await this.storageService.getResultDownloadUrl(dataset.storageKey, { expiresInSeconds: expiresIn })
+      : await this.storageService.getDatasetDownloadUrl(dataset.storageKey, { expiresInSeconds: expiresIn });
 
     return {
       datasetId: input.datasetId,

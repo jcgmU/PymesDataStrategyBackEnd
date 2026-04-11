@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { DatasetId } from '../../domain/value-objects/DatasetId.js';
 import type { TransformationType } from '../../domain/entities/TransformationJob.js';
 import type { DatasetRepository } from '../../domain/ports/repositories/DatasetRepository.js';
@@ -60,7 +61,7 @@ export class TransformDatasetUseCase {
     }
 
     // 3. Build unique job ID
-    const jobId = `transform-${input.datasetId}-${input.transformationType.toLowerCase()}-${String(Date.now())}`;
+    const jobId = randomUUID();
 
     // 4. Enqueue job
     const result = await this.jobQueueService.enqueue({
@@ -70,6 +71,8 @@ export class TransformDatasetUseCase {
       transformationType: input.transformationType,
       parameters: input.parameters ?? {},
       sourceStorageKey: dataset.storageKey,
+      sourceKey: dataset.storageKey,
+      filename: dataset.originalFileName,
       priority: input.priority ?? 5,
     });
 

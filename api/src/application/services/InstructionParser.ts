@@ -418,17 +418,17 @@ Responde SOLO con el JSON del IR. Sin explicaciones, sin markdown, sin texto adi
       model: this.geminiModel,
       generationConfig: {
         temperature: 0,
-        responseMimeType: 'application/json',
-        maxOutputTokens: 512,
+        // Note: responseMimeType:'application/json' causes truncation in gemini-2.5-flash
+        maxOutputTokens: 1024,
       },
     });
 
-    const timeoutMs = 10_000;
+    const timeoutMs = 15_000;
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       const id = setTimeout(() => {
         clearTimeout(id);
-        reject(new Error('timeout: Gemini did not respond within 10 seconds'));
+        reject(new Error('timeout: Gemini did not respond within 15 seconds'));
       }, timeoutMs);
     });
 
@@ -438,7 +438,9 @@ Responde SOLO con el JSON del IR. Sin explicaciones, sin markdown, sin texto adi
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
     const result = await Promise.race([resultPromise, timeoutPromise]);
     // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access
-    const text: string = result.response.text();
-    return text.trim();
+    let text: string = result.response.text().trim();
+    // Strip markdown code fences if Gemini wraps the JSON
+    text = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    return text;
   }
 }

@@ -5,7 +5,9 @@ Sistema ETL con Human-in-the-Loop para limpieza de datos asistida por IA, orient
 **Repositorio:** https://github.com/jcgmU/PymesDataStrategyBackEnd.git  
 **Código académico:** GIIS SW-005
 
-**Estado: Fase 3 COMPLETA** — ~842 tests pasando (API: ~337, Worker: 308, Frontend: 197 + 4 E2E)
+**Estado: Wave 2 COMPLETA** — NL Edit + Gemini directo + SSE global + fixes de tiempo real
+
+---
 
 ## Arquitectura
 
@@ -16,317 +18,410 @@ Sistema ETL con Human-in-the-Loop para limpieza de datos asistida por IA, orient
 │                                                                      │
 │  ┌──────────────┐   NextAuth v5   ┌──────────────┐                  │
 │  │  Frontend    │────────────────▶│ API Gateway  │                  │
-│  │  (Next.js)   │                 │  (Node.js)   │                  │
+│  │  (Next.js)   │◀── SSE global ──│  (Node.js)   │                  │
 │  │   :3001      │                 │   :3000      │                  │
 │  └──────────────┘                 └──────┬───────┘                  │
 │                                          │ BullMQ                   │
 │                                   ┌──────▼───────┐                  │
-│                                   │ Worker ETL   │                  │
-│                                   │  (Python)    │                  │
+│                                   │ Worker ETL   │◀── Gemini API    │
+│                                   │  (Python)    │    (directo)     │
 │                                   │   :8000      │                  │
 │                                   └──────┬───────┘                  │
 │                                          │                          │
 │          ┌───────────────┐    ┌──────────┴──────┐   ┌───────────┐  │
 │          │  PostgreSQL   │    │     MinIO        │   │   Redis   │  │
-│          │    :5432      │    │  :9000 / :9001   │   │   :6379   │  │
+│          │    :5433      │    │  :9000 / :9001   │   │   :6380   │  │
 │          └───────────────┘    └─────────────────┘   └───────────┘  │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-## Stack Tecnológico
+---
 
-### API Gateway (Node.js)
-- **Express 4.21** — Framework web
-- **TypeScript 5.7** — Tipado estático, arquitectura hexagonal
-- **Prisma 6** — ORM + migraciones (`prisma/migrations/` — 2 migraciones aplicadas)
-- **BullMQ 5.34** — Productor de cola de trabajos
-- **Zod 3.24** — Validación de esquemas
-- **Vitest** — ~337 tests unitarios/integración
+## Inicio Rápido (Levantamiento Completo)
 
-### Worker ETL (Python)
-- **FastAPI 0.115** — Framework web
-- **Polars 1.23** — Procesamiento de datos de alto rendimiento
-- **Pandas 2.2** — Manipulación de datos
-- **BullMQ 2.9** — Consumidor de cola (binding Python)
-- **Pydantic 2.10** — Configuración y validación
-- **pytest** — 308 tests
+### Prerrequisitos
 
-### Frontend
-- **Next.js 15** + **NextAuth v5** — App Router, autenticación
-- **Recharts** — Dashboard de analíticas
-- **Vitest** — 197 tests + 4 specs E2E con Playwright
+- **Docker Desktop** instalado y corriendo
+- **Git**
+- Los puertos `3000`, `3001`, `5433`, `6380`, `8000`, `9000`, `9001` disponibles
 
-### Infraestructura
-- **PostgreSQL 15** — Base de datos relacional
-- **Redis 7** — Broker de mensajes (BullMQ)
-- **MinIO** — Almacenamiento de objetos compatible con S3
-- **Docker Compose** — 7 servicios orquestados
+### 1. Clonar repositorios
 
-## Funcionalidades Implementadas
-
-- **Autenticación JWT** — NextAuth v5 + Express JWT (registro, login, logout, sesión)
-- **Gestión de Datasets** — Subida CSV/Excel a MinIO, CRUD completo
-- **Transformaciones ETL** — 6 tipos: imputación de nulos, eliminación de outliers, normalización de tipos, deduplicación, formato de fechas, escalado
-- **Human-in-the-Loop (HITL)** — Detección de anomalías → revisión humana → decisión aplicada
-- **Streaming SSE** — Estado de jobs en tiempo real (`GET /jobs/:id/stream`)
-- **Dashboard de analíticas** — Endpoint de stats + visualización con Recharts
-- **Swagger / OpenAPI** — Documentación interactiva en `http://localhost:3000/api/docs`
-- **Stack Docker E2E** — Todos los servicios orquestados con `docker-compose.yml`
-- **Migraciones Prisma** — 2 migraciones aplicadas (tablas `anomalies` + `decisions`)
-
-## Inicio Rápido
+El proyecto usa dos repositorios separados (backend y frontend):
 
 ```bash
-# Iniciar todos los servicios (desde backend/)
-make up
+# Crear carpeta raíz del proyecto
+mkdir proyecto && cd proyecto
 
+# Clonar backend
+git clone https://github.com/jcgmU/PymesDataStrategyBackEnd.git backend
+
+# Clonar frontend (en la misma carpeta raíz)
+git clone https://github.com/jcgmU/PymesDataStrategyFrontEnd.git frontend
+```
+
+La estructura final debe quedar así:
+
+```
+proyecto/
+├── backend/    ← este repositorio
+└── frontend/   ← repositorio del frontend
+```
+
+> **Importante:** El `docker-compose.yml` del backend referencia al frontend con la ruta relativa `../frontend`. Ambas carpetas deben estar al mismo nivel.
+
+### 2. Configurar variables de entorno
+
+```bash
+cd backend
+cp .env.example .env
+```
+
+Edita `.env` y completa las variables requeridas:
+
+| Variable | Requerida | Descripción |
+|----------|-----------|-------------|
+| `GEMINI_API_KEY` | **Sí, para NL Edit** | Obtener en [Google AI Studio](https://aistudio.google.com/app/apikey) |
+| `GEMINI_MODEL` | No (default: `gemini-2.5-flash`) | Modelo Gemini a usar |
+| `JWT_SECRET` | Sí en producción | Secreto para tokens JWT (cambiar en prod) |
+| `NEXTAUTH_SECRET` | Sí en producción | Secreto para NextAuth v5 (cambiar en prod) |
+| `N8N_SUGGESTIONS_WEBHOOK_URL` | No | Solo si usas n8n como fallback de sugerencias AI |
+
+> **Nota sobre `GEMINI_API_KEY`:** Sin esta clave el NL Edit funciona en modo literal (acepta números, `null` y strings entre comillas). Para instrucciones en lenguaje natural como "rellena con la media" que requieren interpretación avanzada (condicionales, etc.) se necesita la clave.
+
+> **Nota sobre `GEMINI_MODEL`:** Usar `gemini-2.5-flash`. Los modelos `gemini-2.0-flash` y `gemini-2.0-flash-exp` ya no están disponibles para cuentas nuevas de Google AI Studio.
+
+### 3. Levantar el stack completo
+
+```bash
+cd backend
+
+# Primera vez: construir imágenes y levantar todo
+docker compose build
+docker compose up -d
+
+# Verificar que todos los servicios están healthy
+docker compose ps
+```
+
+Esperar ~30-60 segundos hasta que todos los servicios aparezcan como `healthy`. Luego acceder a:
+
+| Servicio | URL |
+|----------|-----|
+| **Frontend (App)** | http://localhost:3001 |
+| **API Swagger Docs** | http://localhost:3000/api/docs |
+| **MinIO Consola** | http://localhost:9001 (usuario: `minioadmin`, pass: `minioadmin123`) |
+
+### 4. Primera vez: crear usuario
+
+En http://localhost:3001 registrarse con email y contraseña. O via API:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"tu@email.com","password":"tupassword","name":"Tu Nombre"}'
+```
+
+### Comandos de gestión
+
+```bash
 # Ver logs en tiempo real
-make logs
+docker compose logs -f
 
-# Ver estado de los servicios
-make ps
+# Ver logs de un servicio específico
+docker compose logs -f pymes-api
+docker compose logs -f pymes-worker
 
-# Detener todos los servicios
-make down
+# Detener todo
+docker compose down
+
+# Detener y borrar volúmenes (resetea la BD)
+docker compose down -v
+
+# Reconstruir imágenes (tras cambios en dependencias)
+docker compose build --no-cache
+docker compose up -d
 ```
 
-### Ejecutar tests
-
-```bash
-# API Gateway (~337 tests, Vitest)
-make test-api
-
-# Worker ETL (308 tests, pytest)
-make test-worker
-
-# Con cobertura (manual)
-cd api && pnpm test:coverage
-cd worker && uv run pytest --cov=src --cov-report=html
-```
+---
 
 ## Servicios Docker
 
-| Servicio            | URL                           | Descripción                   |
-|---------------------|-------------------------------|-------------------------------|
-| `pymes-frontend`    | http://localhost:3001         | Next.js 15 + NextAuth v5      |
-| `pymes-api`         | http://localhost:3000         | API Gateway (Express)         |
-| `pymes-worker`      | http://localhost:8000         | Worker ETL (FastAPI)          |
-| `pymes-minio`       | http://localhost:9001         | Consola MinIO                 |
-| `pymes-postgres`    | localhost:5432                | PostgreSQL 15                 |
-| `pymes-redis`       | localhost:6379                | Redis 7                       |
-| `pymes-minio-init`  | —                             | Inicializador de buckets (one-shot) |
+| Servicio | URL | Descripción |
+|----------|-----|-------------|
+| `pymes-frontend` | http://localhost:3001 | Next.js 16 + NextAuth v5 |
+| `pymes-api` | http://localhost:3000 | API Gateway (Express + TypeScript) |
+| `pymes-worker` | http://localhost:8000 | Worker ETL (FastAPI + Python) |
+| `pymes-minio` | http://localhost:9001 (consola) | Almacenamiento de objetos (S3-compatible) |
+| `pymes-postgres` | localhost:5433 | PostgreSQL 16 |
+| `pymes-redis` | localhost:6380 | Redis 7 (BullMQ broker) |
+| `pymes-minio-init` | — | Crea buckets al inicio (one-shot) |
 
-## Endpoints Disponibles
+> Los puertos locales difieren de los internos del contenedor (5433 en vez de 5432, 6380 en vez de 6379) para evitar conflictos con instalaciones locales.
 
-Prefijo base: `/api/v1` — Documentación interactiva: `http://localhost:3000/api/docs`
+---
 
-### Autenticación (4 endpoints)
+## Funcionalidades
 
-| Método | Endpoint             | Descripción                    |
-|--------|----------------------|--------------------------------|
-| POST   | `/auth/register`     | Registrar nuevo usuario        |
-| POST   | `/auth/login`        | Iniciar sesión, retorna JWT    |
-| GET    | `/auth/me`           | Obtener usuario autenticado    |
-| POST   | `/auth/logout`       | Cerrar sesión                  |
+### Core ETL
+- **Subida de archivos** — CSV y Excel (.xlsx, .xls) hasta 10 MB
+- **Detección automática de anomalías** — valores nulos (`MISSING_VALUE`) y outliers estadísticos (`OUTLIER`, Z-score > 3)
+- **6 transformaciones ETL** — imputación, eliminación de outliers, normalización, deduplicación, formato de fechas, escalado
 
-### Datasets (4 endpoints)
+### Human-in-the-Loop (HITL)
+- **Revisión de anomalías** — el usuario ve cada anomalía con su contexto (columna, tipo, valor original)
+- **3 acciones por anomalía** — `APPROVED` (mantener), `CORRECTED` (corregir), `DISCARDED` (eliminar fila)
+- **Aplicación automática** — el Worker aplica las decisiones y genera el archivo limpio
+- **Descarga del resultado** — archivo Excel corregido disponible tras completar la revisión
 
-| Método | Endpoint             | Descripción                                          |
-|--------|----------------------|------------------------------------------------------|
-| POST   | `/datasets`          | Subir CSV/Excel a MinIO (multipart/form-data)        |
-| GET    | `/datasets`          | Listar datasets del usuario autenticado (JWT)        |
-| GET    | `/datasets/:id`      | Obtener dataset por ID                               |
-| DELETE | `/datasets/:id`      | Eliminar dataset                                     |
+### NL Edit (Natural Language Edit)
+- **Instrucciones en español** — el usuario escribe cómo quiere corregir cada anomalía en lenguaje natural
+- **Parser basado en reglas** — instrucciones simples se resuelven localmente sin llamar a Gemini:
+  - `"rellena con la media"` / `"usa la mediana"` / `"usa la moda"`
+  - `"elimina"` / `"borra"` / `"quita esta fila"`
+  - `"mantén"` / `"conserva"` / `"deja igual"`
+  - Literales: `"0"`, `"null"`, `'"sin datos"'`
+- **Fallback a Gemini** — instrucciones complejas (condicionales, transformaciones) se parsean con `gemini-2.5-flash`
+- **Vista previa antes de confirmar** — muestra descripción en español de lo que hará la corrección
+- **Badge de origen** — indica si la corrección fue por regla directa o interpretada por IA
 
-> **Nota:** `GET /datasets` filtra automáticamente por el usuario del JWT. No acepta `?userId=` como parámetro externo (se ignora por seguridad).
+### Sugerencias AI automáticas (Opción C — Worker → Gemini)
+- El Worker llama directamente a Gemini con contexto completo del DataFrame (tipos Polars, estadísticas, valores outlier)
+- Genera sugerencias estructuradas `{"actionType": "FILL|DELETE|KEEP", "value": "...", "reason": "..."}` guardadas en la BD
+- Si no hay `GEMINI_API_KEY`, hace fallback al webhook de n8n (si está configurado)
 
-### Jobs ETL (4 endpoints)
+### Tiempo real (SSE)
+- **Estado de jobs** — `GET /api/v1/jobs/:id/events` notifica cada cambio de estado del job (PENDING → PROCESSING → COMPLETED)
+- **SSE global del workspace** — `GET /api/v1/events` notifica cambios de datasets al frontend (status_changed, anomalies_ready)
+- La tabla de datasets se actualiza automáticamente sin necesidad de refrescar la página
 
-| Método | Endpoint               | Descripción                          |
-|--------|------------------------|--------------------------------------|
-| POST   | `/jobs`                | Crear y encolar job ETL              |
-| GET    | `/jobs`                | Listar jobs del usuario              |
-| GET    | `/jobs/:id`            | Obtener estado de un job             |
-| GET    | `/jobs/:id/stream`     | Stream SSE de estado en tiempo real  |
+### Autenticación
+- **NextAuth v5** — gestión de sesión en el frontend
+- **JWT** — tokens firmados para API Gateway
+- **Registro y login** via UI o API REST
 
-### Human-in-the-Loop / Decisiones (2 endpoints)
+---
 
-| Método | Endpoint                  | Descripción                              |
-|--------|---------------------------|------------------------------------------|
-| GET    | `/jobs/:id/anomalies`     | Obtener anomalías detectadas del job     |
-| POST   | `/jobs/:id/decisions`     | Enviar decisiones humanas sobre anomalías|
-
-### Estadísticas (1 endpoint)
-
-| Método | Endpoint   | Descripción                              |
-|--------|------------|------------------------------------------|
-| GET    | `/stats`   | Métricas globales de uso (dashboard)     |
-
-### Health (2 endpoints)
-
-| Método | Endpoint           | Descripción                       |
-|--------|--------------------|-----------------------------------|
-| GET    | `/health`          | Health check básico               |
-| GET    | `/health/detailed` | Health check con estado de dependencias |
-
-## Flujo Human-in-the-Loop (HITL)
+## Flujo Completo de Uso
 
 ```
-1. Usuario crea un job ETL   →  POST /api/v1/jobs
-2. Worker procesa el dataset →  detecta anomalías automáticamente
-3. Job queda en estado       →  AWAITING_REVIEW
-4. Usuario consulta anomalías→  GET /api/v1/jobs/:id/anomalies
-5. Usuario revisa y decide   →  POST /api/v1/jobs/:id/decisions
-6. Worker aplica decisiones  →  job avanza a COMPLETED
-7. Resultado disponible      →  en MinIO (descarga directa)
+1. Registrarse/Iniciar sesión en http://localhost:3001
+
+2. Subir archivo CSV o Excel desde el Dashboard
+   └── El Worker detecta anomalías automáticamente
+
+3. Esperar que el status cambie a "Procesando"
+   └── La tabla se actualiza en tiempo real via SSE
+
+4. Clic en "Ver Detalle" para revisar anomalías
+   └── Cada anomalía muestra: columna, tipo, valor original, sugerencia AI
+
+5. Para cada anomalía elegir:
+   ├── Aprobar (mantener valor)
+   ├── Editar con instrucción NL: "rellena con la media"
+   │   └── Ver vista previa → Confirmar
+   └── Descartar (eliminar fila)
+
+6. Enviar todas las decisiones
+   └── El Worker aplica las correcciones y genera el archivo limpio
+
+7. Clic en "Descargar" para obtener el Excel corregido
 ```
 
-El estado del job puede seguirse en tiempo real via SSE: `GET /api/v1/jobs/:id/stream`.
+---
 
-## Health Checks
+## Endpoints API
+
+Base: `/api/v1` — Swagger UI: http://localhost:3000/api/docs
+
+### Autenticación
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| POST | `/auth/register` | Registrar usuario |
+| POST | `/auth/login` | Login, retorna JWT |
+| GET | `/auth/users/me` | Usuario autenticado |
+| PATCH | `/auth/users/me` | Actualizar perfil |
+
+### Datasets
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| POST | `/datasets` | Subir archivo (multipart) |
+| GET | `/datasets` | Listar datasets del usuario |
+| GET | `/datasets/:id` | Obtener dataset |
+| DELETE | `/datasets/:id` | Eliminar dataset |
+| POST | `/datasets/:id/transform` | Iniciar ETL |
+| GET | `/datasets/:id/anomalies` | Listar anomalías detectadas |
+| POST | `/datasets/:id/decisions` | Enviar decisiones HITL |
+| POST | `/datasets/:id/anomalies/:anomalyId/parse-instruction` | Parsear instrucción NL a IR |
+| GET | `/datasets/:id/download` | URL de descarga del archivo procesado |
+
+### Jobs y Tiempo Real
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | `/jobs/:id` | Estado de un job |
+| GET | `/jobs/:id/events` | SSE stream de estado del job |
+| GET | `/events` | SSE stream global del workspace |
+
+### Estadísticas y Health
+| Método | Endpoint | Descripción |
+|--------|----------|-------------|
+| GET | `/stats` | Métricas globales del dashboard |
+| GET | `/health` | Health check básico |
+
+---
+
+## Stack Tecnológico
+
+### API Gateway (Node.js)
+- **Express 4.21** + **TypeScript 5.7** — Framework web, arquitectura hexagonal
+- **Prisma 6** — ORM + migraciones PostgreSQL
+- **BullMQ 5** — Cola de jobs (productor)
+- **@google/generative-ai 0.24** — NL Edit parser con Gemini
+- **Zod 3.24** — Validación de esquemas y variables de entorno
+
+### Worker ETL (Python)
+- **FastAPI 0.115** + **Polars 1.39** — Framework web y procesamiento de datos
+- **google-generativeai 0.8** — Sugerencias AI directas (Opción C)
+- **BullMQ 2.9** — Consumidor de cola (binding Python)
+- **SQLAlchemy 2** + **asyncpg** — Persistencia PostgreSQL
+- **boto3** — Cliente MinIO/S3
+
+### Frontend (repositorio separado)
+- **Next.js 16** + **React 19** + **TypeScript**
+- **NextAuth v5** — Autenticación
+- **TanStack Query v5** — Estado del servidor + polling/SSE
+- **Zustand** — Estado global del cliente
+- **Tailwind CSS** — Diseño Neo-Brutalism
+
+### Infraestructura
+- **PostgreSQL 16** + **Redis 7** + **MinIO** — BD, broker, almacenamiento
+- **Docker Compose** — 7 servicios orquestados
+
+---
+
+## Solución de Problemas
+
+### El worker no inicia / `ModuleNotFoundError: No module named 'google'`
+
+La imagen Docker está desactualizada. Reconstruir:
 
 ```bash
-# API Gateway
-curl http://localhost:3000/health
-curl http://localhost:3000/health/detailed
-
-# Worker ETL
-curl http://localhost:8000/health
+docker compose build worker
+docker compose up -d worker
 ```
 
-## Desarrollo Local (sin Docker)
+### Los modelos Gemini retornan 404
+
+Los modelos `gemini-2.0-flash` y `gemini-2.0-flash-exp` ya no están disponibles para cuentas nuevas. Actualizar en `.env`:
+
+```
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+Y reinicar los contenedores:
 
 ```bash
-# Iniciar solo infraestructura (postgres, redis, minio)
-make up
-
-# Ejecutar API localmente
-make api-dev
-
-# Ejecutar Worker localmente (requiere uv)
-make worker-dev
+docker compose up -d --force-recreate api worker
 ```
 
-## Base de Datos
+### La lista de datasets no se actualiza
+
+Verificar que el SSE global está conectado (sin errores en la consola del navegador). El polling de respaldo es cada 3 segundos cuando hay datasets en procesamiento.
+
+### Conflictos de puertos
+
+Ajustar en `.env`:
+```
+POSTGRES_PORT=5433    # default, cambiar si el 5433 está ocupado
+REDIS_PORT=6380       # default, cambiar si el 6380 está ocupado
+```
+
+### Problemas de BD / migraciones
 
 ```bash
-# Ejecutar migraciones (ya aplicadas: anomalies + decisions)
-make db-migrate
+# Las migraciones se aplican automáticamente al iniciar
+# Si hay problemas, aplicar manualmente:
+docker exec pymes-api pnpm exec prisma migrate deploy --schema=prisma/schema.prisma
 
-# Abrir Prisma Studio
-make db-studio
-
-# Resetear base de datos (ADVERTENCIA: pérdida de datos)
-make db-reset
+# Resetear BD (ADVERTENCIA: borra todos los datos)
+docker compose down -v
+docker compose up -d
 ```
 
-## Utilidades
-
-```bash
-make psql        # CLI de PostgreSQL
-make redis-cli   # CLI de Redis
-make install     # Instalar dependencias
-make lint        # Lint del código
-make typecheck   # Verificar tipos TypeScript
-make clean       # Eliminar contenedores y volúmenes
-```
+---
 
 ## Estructura del Proyecto
 
 ```
 backend/
-├── api/                      # API Gateway (Node.js + TypeScript)
+├── api/                          # API Gateway (Node.js + TypeScript)
 │   └── src/
-│       ├── domain/           # Lógica de negocio (núcleo hexagonal)
+│       ├── domain/               # Núcleo hexagonal (entidades, puertos, errores)
 │       │   ├── entities/
 │       │   ├── value-objects/
 │       │   ├── ports/
-│       │   └── errors/
-│       ├── application/      # Casos de uso y DTOs
-│       └── infrastructure/   # Adaptadores (HTTP, BD, Cola)
-│           ├── config/
+│       │   └── ir/               # IR (Intermediate Representation) para NL Edit
+│       ├── application/          # Casos de uso
+│       │   ├── use-cases/        # CreateDataset, SubmitDecisions, ParseInstruction...
+│       │   └── services/         # InstructionParser (reglas + Gemini)
+│       └── infrastructure/       # Adaptadores HTTP, BD, cola, SSE
 │           ├── http/
-│           │   ├── controllers/
-│           │   ├── middleware/
+│           │   ├── controllers/  # Dataset, Job, Events, Webhook
+│           │   ├── middleware/   # Auth JWT
 │           │   └── routes/
+│           ├── messaging/
+│           │   └── bullmq/       # BullMQJobQueue, BullMQQueueEvents, DatasetStatusSyncListener
 │           └── persistence/
-├── worker/                   # Worker ETL (Python + FastAPI)
+├── worker/                       # Worker ETL (Python + FastAPI)
 │   └── src/
-│       ├── domain/           # Lógica de negocio (núcleo hexagonal)
-│       ├── application/      # Casos de uso y DTOs
-│       └── infrastructure/   # Adaptadores (HTTP, Almacenamiento, Cola)
-├── prisma/                   # Esquema Prisma + migraciones
-│   └── migrations/           # 2 migraciones aplicadas (anomalies, decisions)
-├── docker/                   # Configuraciones Docker por servicio
-├── docs/                     # Documentación del proyecto
-├── openspec/                 # Artefactos SDD (propuestas, specs, diseños)
-├── docker-compose.yml        # Orquestación de 7 servicios
-├── Makefile                  # Comandos de desarrollo
-└── README.md                 # Este archivo
+│       ├── domain/               # Entidades, puertos (incluyendo AiSuggestionService)
+│       ├── application/          # ProcessDatasetUseCase (HITL + NL Edit execution)
+│       └── infrastructure/
+│           ├── ai/               # GeminiSuggestionService (Opción C)
+│           └── persistence/      # PostgreSQL (SQLAlchemy)
+├── prisma/                       # Schema + 3 migraciones aplicadas
+├── docker/                       # Configuraciones Docker por servicio
+├── docker-compose.yml            # 7 servicios orquestados
+├── Makefile                      # Comandos de desarrollo
+└── .env.example                  # Plantilla de variables de entorno
 ```
 
-## Variables de Entorno
+---
 
-Copiar `.env.example` a `.env`:
+## Decisiones de Arquitectura
+
+1. **Arquitectura Hexagonal** — Dominio puro en ambos servicios (Node.js y Python), sin dependencias externas en el núcleo
+2. **BullMQ sobre RabbitMQ** — Funciona en Node.js y Python, Redis ya en el stack
+3. **PostgreSQL + JSONB** — Stack simplificado; JSONB cubre necesidades documentales (schema de datasets, IR de correcciones)
+4. **SSE sobre WebSockets** — Unidireccional suficiente para estado de jobs; menor complejidad operativa
+5. **Worker → Gemini directo (Opción C)** — El Worker tiene acceso al DataFrame completo (tipos Polars, estadísticas reales) que n8n nunca tendría; prompts más precisos
+6. **IR estructurado para NL Edit** — Las instrucciones en lenguaje natural se parsean a un árbol IR validado antes de persistirse; seguridad y reproducibilidad
+
+---
+
+## Variables de Entorno
 
 ```bash
 cp .env.example .env
 ```
 
-Variables principales:
+| Variable | Default | Descripción |
+|----------|---------|-------------|
+| `POSTGRES_USER` | `pymes` | Usuario PostgreSQL |
+| `POSTGRES_PASSWORD` | `pymes_dev_password` | Contraseña PostgreSQL |
+| `POSTGRES_PORT` | `5433` | Puerto local PostgreSQL |
+| `REDIS_PORT` | `6380` | Puerto local Redis |
+| `API_PORT` | `3000` | Puerto API Gateway |
+| `WORKER_PORT` | `8000` | Puerto Worker ETL |
+| `JWT_SECRET` | (dev value) | **Cambiar en producción** |
+| `NEXTAUTH_SECRET` | (dev value) | **Cambiar en producción** |
+| `GEMINI_API_KEY` | vacío | API key Google AI Studio |
+| `GEMINI_MODEL` | `gemini-2.5-flash` | Modelo Gemini |
+| `INSTRUCTION_PARSER_ENABLED` | `true` | Habilita NL Edit con Gemini |
+| `N8N_SUGGESTIONS_WEBHOOK_URL` | vacío | Fallback n8n (opcional) |
 
-| Variable          | Descripción                          |
-|-------------------|--------------------------------------|
-| `DATABASE_URL`    | Conexión PostgreSQL (Prisma)         |
-| `REDIS_URL`       | Conexión Redis (BullMQ)              |
-| `MINIO_*`         | Credenciales y endpoint MinIO        |
-| `JWT_SECRET`      | Secreto para firma de tokens JWT     |
-| `NEXTAUTH_SECRET` | Secreto para NextAuth v5             |
-| `API_PORT`        | Puerto del API Gateway (default 3000)|
-| `WORKER_PORT`     | Puerto del Worker ETL (default 8000) |
-
-Ver `.env.example` para la lista completa.
-
-## Decisiones de Arquitectura
-
-Ver `openspec/` para documentos de diseño completos. Decisiones clave:
-
-1. **ADR-001: PostgreSQL + JSONB sobre MongoDB** — Stack simplificado; JSONB cubre necesidades documentales
-2. **ADR-002: BullMQ para mensajería** — Funciona tanto en Node.js como en Python
-3. **Arquitectura Hexagonal** — Separación limpia entre dominio, aplicación e infraestructura en ambos servicios
-4. **NextAuth v5 + JWT** — Autenticación unificada entre frontend y API
-5. **SSE sobre WebSockets** — Streaming unidireccional suficiente para estado de jobs; menor complejidad
-
-## Solución de Problemas
-
-### Conflictos de puertos
-Los puertos por defecto son 5432, 6379, 3000, 8000, 3001. Ajustar en `.env` si hay conflictos locales.
-
-### Problemas con Docker
-```bash
-# Eliminar todos los contenedores y volúmenes
-make clean
-
-# Reconstruir imágenes sin caché
-docker compose build --no-cache
-```
-
-### Problemas con Prisma
-```bash
-# Regenerar cliente Prisma
-make db-generate
-
-# Ver estado actual de la BD
-make db-studio
-```
-
-## Documentación Adicional
-
-- **Documentación completa del proyecto:** `docs/RESUMEN-PROYECTO.md`
-- **Especificaciones técnicas:** `openspec/` directory
-- **Swagger UI (requiere servicios activos):** `http://localhost:3000/api/docs`
-- **Decisiones de arquitectura:** ADRs en `openspec/`
+---
 
 ## Licencia
 

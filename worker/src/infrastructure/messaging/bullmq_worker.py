@@ -52,7 +52,7 @@ class BullMQWorkerService:
         """
         self._processor = processor
 
-    async def _process_job(self, job: Job, token: str | None = None) -> dict[str, Any]:
+    async def _process_job(self, job: Job, token: str) -> Any:
         """Process a single job from the queue.
 
         Args:
@@ -85,6 +85,11 @@ class BullMQWorkerService:
 
             # Process the job
             result = await self._processor.process(job_data)
+
+            # Si el use case devuleve explícitamente success=False, fallar el job en BullMQ
+            if isinstance(result, dict) and not result.get("success", True):
+                error_msg = result.get("error", "Unknown processing error")
+                raise Exception(error_msg)
 
             # Update progress to complete
             await job.updateProgress(100)
@@ -131,7 +136,7 @@ class BullMQWorkerService:
 
         self._worker = Worker(
             name=self._queue_name,
-            processor=self._process_job,
+            processor=self._process_job,  # type: ignore
             opts={
                 "connection": {
                     "host": self._redis_host,

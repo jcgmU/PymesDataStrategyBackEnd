@@ -7,6 +7,7 @@ import type { Stats } from '../../../../domain/ports/repositories/StatsRepositor
 const makeStats = (overrides?: Partial<Stats>): Stats => ({
   totalDatasets: 10,
   datasetsThisMonth: 3,
+  totalJobs: 8,
   jobsCompleted: 7,
   jobsFailed: 1,
   avgProcessingTimeMs: 1500,

@@ -107,10 +107,17 @@ services:
       MINIO_BUCKET_DATASETS: ${MINIO_BUCKET_DATASETS:-datasets}
       MINIO_BUCKET_RESULTS: ${MINIO_BUCKET_RESULTS:-results}
       MINIO_BUCKET_TEMP: ${MINIO_BUCKET_TEMP:-temp}
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-http://localhost:9000}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-production}
       JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
       BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-10}
+      N8N_SUGGESTIONS_WEBHOOK_URL: ${N8N_SUGGESTIONS_WEBHOOK_URL:-}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:-pymes-n8n-secret-2024}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      INSTRUCTION_PARSER_ENABLED: ${INSTRUCTION_PARSER_ENABLED:-true}
     volumes:
       - ./api/src:/app/api/src:ro
       - ./prisma:/app/prisma:ro
@@ -154,6 +161,10 @@ services:
       MINIO_BUCKET_TEMP: ${MINIO_BUCKET_TEMP:-temp}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
+      N8N_SUGGESTIONS_WEBHOOK_URL: ${N8N_SUGGESTIONS_WEBHOOK_URL:-}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:-pymes-n8n-secret-2024}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
     volumes:
       - ./worker/src:/app/src:ro
     depends_on:

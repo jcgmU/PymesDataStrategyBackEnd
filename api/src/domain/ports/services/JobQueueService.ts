@@ -10,6 +10,9 @@ export interface JobPayload {
   transformationType: TransformationType;
   parameters: Record<string, unknown>;
   sourceStorageKey: string;
+  sourceKey?: string;   // added for python worker compatibility
+  filename?: string;    // added for python worker compatibility
+  outputFormat?: string; // output format matching the original file (csv, xlsx, json, parquet)
   priority?: number;
 }
 

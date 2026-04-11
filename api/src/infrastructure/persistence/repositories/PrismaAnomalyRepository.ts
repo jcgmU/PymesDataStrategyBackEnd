@@ -1,4 +1,4 @@
-import type { PrismaClient, Anomaly as PrismaAnomaly, Decision as PrismaDecision } from '@prisma/client';
+import { PrismaClient, Prisma, type Anomaly as PrismaAnomaly, type Decision as PrismaDecision } from '@prisma/client';
 import type { AnomalyRepository } from '../../../domain/ports/repositories/AnomalyRepository.js';
 import {
   Anomaly,
@@ -53,12 +53,14 @@ export class PrismaAnomalyRepository implements AnomalyRepository {
           description: anomaly.description,
           originalValue: anomaly.originalValue,
           suggestedValue: anomaly.suggestedValue,
+          aiSuggestion: anomaly.aiSuggestion,
           status: anomaly.status,
           createdAt: anomaly.createdAt,
           updatedAt: anomaly.updatedAt,
         },
         update: {
           status: anomaly.status,
+          aiSuggestion: anomaly.aiSuggestion,
           updatedAt: anomaly.updatedAt,
         },
       });
@@ -73,12 +75,20 @@ export class PrismaAnomalyRepository implements AnomalyRepository {
             anomalyId: d.anomalyId,
             action: d.action,
             correction: d.correction,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            correctionIr: (d.correctionIr !== null ? d.correctionIr : Prisma.DbNull) as any,
+            irSource: d.irSource ?? null,
+            irRawText: d.irRawText ?? null,
             userId: d.userId,
             createdAt: d.createdAt,
           },
           update: {
             action: d.action,
             correction: d.correction,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            correctionIr: (d.correctionIr !== null ? d.correctionIr : Prisma.DbNull) as any,
+            irSource: d.irSource ?? null,
+            irRawText: d.irRawText ?? null,
           },
         });
       }
@@ -104,6 +114,9 @@ export class PrismaAnomalyRepository implements AnomalyRepository {
         anomalyId: record.decision.anomalyId,
         action: record.decision.action as DecisionAction,
         correction: record.decision.correction,
+        correctionIr: (record.decision.correctionIr as Record<string, unknown> | null) ?? null,
+        irSource: record.decision.irSource ?? null,
+        irRawText: record.decision.irRawText ?? null,
         userId: record.decision.userId,
         createdAt: record.decision.createdAt,
       };
@@ -118,6 +131,7 @@ export class PrismaAnomalyRepository implements AnomalyRepository {
       description: record.description,
       originalValue: record.originalValue,
       suggestedValue: record.suggestedValue,
+      aiSuggestion: (record as any).aiSuggestion ?? null,
       status: record.status as AnomalyStatus,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,

@@ -3,14 +3,16 @@ import type { Redis } from 'ioredis';
 import { DEFAULT_QUEUE_NAME } from './BullMQJobQueueService.js';
 
 export type JobEventHandler = (jobId: string) => void;
+export type JobCompletedHandler = (jobId: string, resultStr: string) => void;
 export type JobFailedHandler = (jobId: string, failedReason: string) => void;
 
 /**
  * Minimal interface for QueueEvents — allows injection in tests.
  */
 export interface QueueEventsLike {
-  on(event: 'active' | 'completed', handler: (args: { jobId: string }) => void): this;
-  on(event: 'failed', handler: (args: { jobId: string; failedReason: string }) => void): this;
+  on(event: 'active', handler: (args: { jobId: string }) => void): this;
+  on(event: 'completed', handler: (args: { jobId: string; returnvalue: string; prev?: string }) => void): this;
+  on(event: 'failed', handler: (args: { jobId: string; failedReason: string; prev?: string }) => void): this;
   off(event: string, handler: (...args: unknown[]) => void): this;
   close(): Promise<void>;
 }
@@ -39,8 +41,8 @@ export class BullMQQueueEvents {
     this.queueEvents.on('active', ({ jobId }) => { handler(jobId); });
   }
 
-  onJobCompleted(handler: JobEventHandler): void {
-    this.queueEvents.on('completed', ({ jobId }) => { handler(jobId); });
+  onJobCompleted(handler: JobCompletedHandler): void {
+    this.queueEvents.on('completed', ({ jobId, returnvalue }) => { handler(jobId, returnvalue); });
   }
 
   onJobFailed(handler: JobFailedHandler): void {

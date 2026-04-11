@@ -40,6 +40,7 @@ describe('PrismaStatsRepository', () => {
       .mockResolvedValueOnce(3);  // datasetsThisMonth
 
     mockPrisma.transformationJob.count
+      .mockResolvedValueOnce(8)  // totalJobs
       .mockResolvedValueOnce(7)  // jobsCompleted
       .mockResolvedValueOnce(1); // jobsFailed
 
@@ -66,6 +67,7 @@ describe('PrismaStatsRepository', () => {
       .mockResolvedValueOnce(0);
 
     mockPrisma.transformationJob.count
+      .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0);
 

@@ -63,7 +63,10 @@ export interface SubmitDecisionsOutput {
  *   1. { columns: [{name, dtype}] }
  *   2. { col1: 'int64', col2: 'object', ... }
  */
-function extractColumnsFromSchema(schema: Record<string, unknown>): ColumnInfo[] {
+function extractColumnsFromSchema(schema: Record<string, unknown> | null | undefined): ColumnInfo[] {
+  if (!schema) {
+    return [];
+  }
   if (Array.isArray(schema['columns'])) {
     return (schema['columns'] as unknown[])
       .filter(

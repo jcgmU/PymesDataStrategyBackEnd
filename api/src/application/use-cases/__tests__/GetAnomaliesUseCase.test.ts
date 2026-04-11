@@ -104,6 +104,9 @@ describe('GetAnomaliesUseCase', () => {
       anomalyId: 'anomaly-1',
       action: 'APPROVED',
       correction: null,
+      correctionIr: null,
+      irSource: null,
+      irRawText: null,
       userId: 'user-123',
       createdAt: new Date(),
     });

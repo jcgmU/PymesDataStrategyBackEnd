@@ -5,6 +5,23 @@ import type { DatasetRepository } from '../../domain/ports/repositories/DatasetR
 import type { StorageService } from '../../domain/ports/services/StorageService.js';
 import type { JobQueueService, JobPayload } from '../../domain/ports/services/JobQueueService.js';
 
+import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+
+/** Derive output format from a filename extension. Defaults to 'parquet'. */
+function outputFormatFromFilename(filename: string): string {
+  const ext = path.extname(filename).toLowerCase().replace('.', '');
+  const map: Record<string, string> = {
+    xlsx: 'xlsx',
+    xls: 'xlsx',
+    csv: 'csv',
+    json: 'json',
+    parquet: 'parquet',
+    txt: 'csv',
+  };
+  return map[ext] ?? 'parquet';
+}
+
 /**
  * Input DTO for creating a dataset.
  */
@@ -85,7 +102,7 @@ export class CreateDatasetUseCase {
     let jobId: string | undefined;
     if (this.jobQueueService) {
       const jobPayload: JobPayload = {
-        jobId: `parse-${datasetId.value}`,
+        jobId: randomUUID(),
         datasetId: datasetId.value,
         userId: input.userId,
         transformationType: 'CLEAN_NULLS', // Initial parsing job
@@ -94,6 +111,9 @@ export class CreateDatasetUseCase {
           detectSchema: true,
         },
         sourceStorageKey: storageKey,
+        sourceKey: storageKey,
+        filename: input.originalFileName,
+        outputFormat: outputFormatFromFilename(input.originalFileName),
         priority: 10, // High priority for initial parsing
       };
 

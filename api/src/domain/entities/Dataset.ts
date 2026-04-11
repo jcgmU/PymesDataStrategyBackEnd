@@ -125,4 +125,9 @@ export class Dataset {
     this.props.metadata = metadata;
     this.props.updatedAt = new Date();
   }
+
+  updateStorageKey(key: string): void {
+    this.props.storageKey = key;
+    this.props.updatedAt = new Date();
+  }
 }

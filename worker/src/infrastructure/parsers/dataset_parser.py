@@ -280,4 +280,16 @@ class DatasetParser:
         Returns:
             List of row dictionaries.
         """
-        return df.head(n).to_dicts()
+        import datetime
+        rows = df.head(n).to_dicts()
+        
+        def serialize_types(val: Any) -> Any:
+            if isinstance(val, (datetime.date, datetime.datetime)):
+                return val.isoformat()
+            return val
+            
+        for row in rows:
+            for k, v in row.items():
+                row[k] = serialize_types(v)
+                
+        return rows

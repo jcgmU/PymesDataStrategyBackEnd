@@ -8,6 +8,10 @@ import { GetAnomaliesUseCase } from '../../../application/use-cases/GetAnomalies
 import { SubmitDecisionsUseCase } from '../../../application/use-cases/SubmitDecisionsUseCase.js';
 import { ParseInstructionUseCase } from '../../../application/use-cases/ParseInstructionUseCase.js';
 import {
+  GenerateReportUseCase,
+  GeminiUnavailableError,
+} from '../../../application/use-cases/GenerateReportUseCase.js';
+import {
   createDatasetSchema,
   isAllowedMimeType,
 } from '../schemas/dataset.schema.js';
@@ -448,6 +452,50 @@ export class DatasetController {
 
       res.json(result);
     } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * POST /api/v1/datasets/:id/report
+   * Generate an AI-powered report for a dataset's cleaning process.
+   */
+  async generateReport(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const id = req.params['id'] as string;
+
+      if (!id) {
+        throw new ValidationError('Dataset ID is required', 'id');
+      }
+
+      const userId = req.userId ?? getStringHeader(req.headers['x-user-id'], 'anonymous');
+
+      const useCase = new GenerateReportUseCase(
+        this.container.anomalyRepository,
+        this.container.datasetRepository
+      );
+
+      const result = await useCase.execute({ datasetId: id, userId });
+
+      res.json({
+        success: true,
+        data: {
+          stats: result.stats,
+          narrative: result.narrative,
+          datasetName: result.datasetName,
+        },
+      });
+    } catch (error) {
+      if (error instanceof GeminiUnavailableError) {
+        res.status(503).json({
+          success: false,
+          error: {
+            code: error.code,
+            message: error.message,
+          },
+        });
+        return;
+      }
       next(error);
     }
   }

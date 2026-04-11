@@ -499,6 +499,11 @@ export function createDatasetRoutes(container: Container): Router {
     controller.submitDecisions(req, res, next).catch(next);
   });
 
+  // POST /api/v1/datasets/:id/report — Generar informe con IA
+  router.post('/:id/report', (req, res, next) => {
+    controller.generateReport(req, res, next).catch(next);
+  });
+
   /**
    * @openapi
    * /datasets/{id}:

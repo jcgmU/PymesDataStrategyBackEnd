@@ -373,59 +373,59 @@ class ProcessDatasetUseCase:
     ) -> list[AnomalyEntity]:
         """Detect anomalies in the transformed DataFrame.
 
-        Current heuristics:
-        - MISSING_VALUE: any null in any column
-        - OUTLIER: numeric values beyond 3 standard deviations from the mean
-
-        Each distinct (row, column) pair with an issue becomes one anomaly.
+        Heuristics applied (one anomaly record per affected column):
+        - MISSING_VALUE : any null in any column
+        - OUTLIER       : numeric values beyond 3 standard deviations from the mean
+        - DUPLICATE     : repeated values in high-uniqueness columns (ID, email, phone…)
+        - FORMAT_INVALID: values that violate expected format patterns (email, phone)
+        - INCONSISTENT  : values outside the dominant category set of low-cardinality columns
+        - DATE_OUTLIER  : dates with years outside a reasonable human range (1900–2030)
         """
         anomalies: list[AnomalyEntity] = []
 
-        # Missing values (grouped by column to avoid hundreds of individual anomalies)
         _numeric_fill_dtypes = (
             pl.Int8, pl.Int16, pl.Int32, pl.Int64,
             pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
             pl.Float32, pl.Float64,
         )
         _string_fill_dtypes = (pl.Utf8, pl.String, pl.Categorical)
+        _email_kw = ("email", "correo", "mail", "e-mail", "e_mail")
+        _phone_kw = ("phone", "tel", "telefono", "fono", "celular", "movil", "móvil")
 
+        # ── 1. MISSING VALUES ─────────────────────────────────────────────────
         for col in df.columns:
-            null_mask = df[col].is_null()
-            null_count = null_mask.sum()
+            null_count = df[col].is_null().sum()
+            if null_count == 0:
+                continue
 
-            if null_count > 0:
-                non_null = df[col].drop_nulls()
-                dtype = df[col].dtype
+            non_null = df[col].drop_nulls()
+            dtype = df[col].dtype
 
-                if dtype in _numeric_fill_dtypes:
-                    if non_null.len() == 0:
-                        fill_value = "0"
-                    else:
-                        mean_val = non_null.cast(pl.Float64).mean()
-                        fill_value = str(mean_val)
-                elif dtype in _string_fill_dtypes or dtype == pl.Boolean:
-                    if non_null.len() == 0:
-                        fill_value = ""
-                    else:
-                        counts = non_null.value_counts(sort=True)
-                        fill_value = str(counts[col][0])
+            if dtype in _numeric_fill_dtypes:
+                fill_value = "0" if non_null.len() == 0 else str(non_null.cast(pl.Float64).mean())
+            elif dtype in _string_fill_dtypes or dtype == pl.Boolean:
+                if non_null.len() == 0:
+                    fill_value = ""
                 else:
-                    fill_value = "null"
+                    counts = non_null.value_counts(sort=True)
+                    fill_value = str(counts[col][0])
+            else:
+                fill_value = "null"
 
-                anomalies.append(
-                    AnomalyEntity.create(
-                        id=str(uuid4()),
-                        dataset_id=dataset_id,
-                        column=col,
-                        row=int(str(null_count)),  # Store the count of affected rows in the 'row' field for grouping
-                        anomaly_type="MISSING_VALUE",
-                        description=f"Null values in column '{col}'",
-                        original_value=None,
-                        suggested_value=fill_value,
-                    )
+            anomalies.append(
+                AnomalyEntity.create(
+                    id=str(uuid4()),
+                    dataset_id=dataset_id,
+                    column=col,
+                    row=int(str(null_count)),
+                    anomaly_type="MISSING_VALUE",
+                    description=f"Null values in column '{col}'",
+                    original_value=None,
+                    suggested_value=fill_value,
                 )
+            )
 
-        # Outliers (numeric only — Z-score > 3, grouped by column)
+        # ── 2. NUMERIC OUTLIERS (Z-score > 3) ────────────────────────────────
         numeric_dtypes = (
             pl.Int8, pl.Int16, pl.Int32, pl.Int64,
             pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
@@ -435,36 +435,221 @@ class ProcessDatasetUseCase:
             if df[col].dtype not in numeric_dtypes:
                 continue
             series = df[col].cast(pl.Float64).drop_nulls()
-            if series.len() < 4:  # Too few points for meaningful stats
+            if series.len() < 4:
                 continue
             mean = series.mean()
             std = series.std()
             if std is None or std == 0:
                 continue
-            
+
             mean_f = float(str(mean))  # type: ignore[arg-type]
-            std_f = float(str(std))  # type: ignore[arg-type]
-            
-            # Calculate z-scores using polars expressions for speed
-            z_scores = ((df[col].cast(pl.Float64) - mean_f).abs() / std_f)
-            outliers_mask = z_scores > 3.0
+            std_f = float(str(std))    # type: ignore[arg-type]
+            outliers_mask = ((df[col].cast(pl.Float64) - mean_f).abs() / std_f) > 3.0
             outliers_count = int(str(outliers_mask.sum()))
-            
+
             if outliers_count > 0:
                 anomalies.append(
                     AnomalyEntity.create(
                         id=str(uuid4()),
                         dataset_id=dataset_id,
                         column=col,
-                        row=int(str(outliers_count)),  # Store the count of affected rows in the 'row' field
+                        row=outliers_count,
                         anomaly_type="OUTLIER",
-                        description=(
-                            f"Outliers detected in column '{col}'"
-                        ),
+                        description=f"Outliers detected in column '{col}'",
                         original_value=None,
                         suggested_value=str(mean),
                     )
                 )
+
+        # ── 3. DUPLICATES ─────────────────────────────────────────────────────
+        # Flag columns where duplicates are unexpected:
+        #   a) Keyword-based: column name suggests a unique identifier (ID, email, phone…)
+        #   b) Generic: String columns where ≥98% of values are unique AND at least
+        #      one value appears more than twice (to avoid flagging natural coincidences)
+        # Date/Datetime columns are excluded — duplicate birthdays/dates are normal.
+        _id_kw = ("id", "codigo", "código", "code", "uuid", "clave", "key")
+
+        for col in df.columns:
+            # Skip date columns — birthday/date duplicates are statistically expected
+            if df[col].dtype in (pl.Date, pl.Datetime):
+                continue
+
+            non_null = df[col].drop_nulls()
+            if non_null.len() < 4:
+                continue
+            unique_ratio = non_null.n_unique() / non_null.len()
+
+            col_lower = col.lower()
+            is_id_like = (
+                any(kw in col_lower for kw in _id_kw)
+                or any(kw in col_lower for kw in _email_kw)
+                or any(kw in col_lower for kw in _phone_kw)
+            )
+
+            # For ID/email/phone columns use a lower threshold (0.80);
+            # for generic columns require near-perfect uniqueness (0.98) and
+            # at least one value appearing 3+ times to avoid flagging common names.
+            if is_id_like:
+                if unique_ratio < 0.80:
+                    continue
+            else:
+                if unique_ratio < 0.98:
+                    continue
+
+            vc = non_null.value_counts(sort=True)
+            dups = vc.filter(pl.col("count") > 1)
+            if len(dups) == 0:
+                continue
+
+            # Extra occurrences beyond the first legitimate one
+            dup_instance_count = int(str((dups["count"] - 1).sum()))
+            example = str(dups[col][0])
+
+            anomalies.append(
+                AnomalyEntity.create(
+                    id=str(uuid4()),
+                    dataset_id=dataset_id,
+                    column=col,
+                    row=dup_instance_count,
+                    anomaly_type="DUPLICATE",
+                    description=(
+                        f"Duplicate values in column '{col}': "
+                        f"{dup_instance_count} extra instance(s) across "
+                        f"{len(dups)} repeated value(s). Example: '{example}'"
+                    ),
+                    original_value=example,
+                    suggested_value=None,
+                )
+            )
+
+        # ── 4. FORMAT_INVALID (email & phone columns) ─────────────────────────
+        for col in df.columns:
+            if df[col].dtype not in _string_fill_dtypes:
+                continue
+            col_lower = col.lower()
+            non_null = df[col].drop_nulls()
+            if non_null.len() == 0:
+                continue
+
+            invalid_mask: pl.Series | None = None
+            format_hint = ""
+
+            if any(kw in col_lower for kw in _email_kw):
+                # Valid email: something@something.something
+                valid = non_null.str.contains(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+                invalid_mask = ~valid
+                format_hint = "email address"
+
+            elif any(kw in col_lower for kw in _phone_kw):
+                # Strip common separators; result must be 7–15 digits
+                cleaned = non_null.str.replace_all(r"[\s\-\(\)\+\.]", "")
+                valid = cleaned.str.contains(r"^\d{7,15}$")
+                invalid_mask = ~valid
+                format_hint = "phone number"
+
+            if invalid_mask is None:
+                continue
+
+            invalid_count = int(str(invalid_mask.sum()))
+            if invalid_count == 0:
+                continue
+
+            example = str(non_null.filter(invalid_mask)[0])
+            anomalies.append(
+                AnomalyEntity.create(
+                    id=str(uuid4()),
+                    dataset_id=dataset_id,
+                    column=col,
+                    row=invalid_count,
+                    anomaly_type="FORMAT_INVALID",
+                    description=(
+                        f"Invalid {format_hint} format in column '{col}': "
+                        f"{invalid_count} value(s) do not match the expected pattern. "
+                        f"Example: '{example}'"
+                    ),
+                    original_value=example,
+                    suggested_value=None,
+                )
+            )
+
+        # ── 5. INCONSISTENT VALUES (categorical columns) ─────────────────────
+        # For low-cardinality string columns (<=15 unique values, <10% unique ratio),
+        # flag values that appear rarely compared to the dominant set.
+        for col in df.columns:
+            if df[col].dtype not in _string_fill_dtypes:
+                continue
+            non_null = df[col].drop_nulls()
+            total = non_null.len()
+            if total < 10:
+                continue
+            n_unique = non_null.n_unique()
+            if n_unique > 15 or (n_unique / total) >= 0.10:
+                continue  # Not a low-cardinality column
+
+            vc = non_null.value_counts(sort=True)
+            # "Common" = appears in at least 1% of rows or at least 2 times
+            threshold = max(2, int(total * 0.01))
+            rare = vc.filter(pl.col("count") < threshold)
+            if len(rare) == 0:
+                continue
+
+            rare_count = int(str(rare["count"].sum()))
+            common_values = vc.filter(pl.col("count") >= threshold)[col].to_list()
+            example_rare = str(rare[col][0])
+
+            anomalies.append(
+                AnomalyEntity.create(
+                    id=str(uuid4()),
+                    dataset_id=dataset_id,
+                    column=col,
+                    row=rare_count,
+                    anomaly_type="INCONSISTENT",
+                    description=(
+                        f"Unexpected values in categorical column '{col}': "
+                        f"{rare_count} value(s) fall outside the expected set "
+                        f"{common_values[:5]}. Example: '{example_rare}'"
+                    ),
+                    original_value=example_rare,
+                    suggested_value=str(common_values[0]) if common_values else None,
+                )
+            )
+
+        # ── 6. DATE OUTLIERS (years outside a reasonable human range) ─────────
+        _date_dtypes = (pl.Date, pl.Datetime)
+        _DATE_MIN_YEAR = 1900
+        _DATE_MAX_YEAR = 2030
+
+        for col in df.columns:
+            if df[col].dtype not in _date_dtypes:
+                continue
+            non_null = df[col].drop_nulls()
+            if non_null.len() == 0:
+                continue
+
+            years = non_null.dt.year()
+            out_of_range = (years < _DATE_MIN_YEAR) | (years > _DATE_MAX_YEAR)
+            bad_count = int(str(out_of_range.sum()))
+            if bad_count == 0:
+                continue
+
+            example_date = str(non_null.filter(out_of_range)[0])
+            anomalies.append(
+                AnomalyEntity.create(
+                    id=str(uuid4()),
+                    dataset_id=dataset_id,
+                    column=col,
+                    row=bad_count,
+                    anomaly_type="OUTLIER",
+                    description=(
+                        f"Impossible dates in column '{col}': "
+                        f"{bad_count} value(s) have years outside the range "
+                        f"{_DATE_MIN_YEAR}–{_DATE_MAX_YEAR}. "
+                        f"Example: '{example_date}'"
+                    ),
+                    original_value=example_date,
+                    suggested_value=None,
+                )
+            )
 
         return anomalies
 

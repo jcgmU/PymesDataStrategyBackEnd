@@ -1,4 +1,18 @@
-export type AnomalyType = 'MISSING_VALUE' | 'OUTLIER' | 'FORMAT_ERROR' | 'DUPLICATE';
+export type AnomalyType =
+  | 'MISSING_VALUE'
+  | 'OUTLIER'
+  | 'DUPLICATE'
+  | 'FORMAT_INVALID'
+  | 'INCONSISTENT'
+  | 'WHITESPACE_ONLY'
+  | 'CROSS_FIELD_SWAP'
+  | 'SUSPICIOUS_PLACEHOLDER'
+  | 'LEADING_TRAILING_WHITESPACE'
+  | 'DATE_LOGICAL'
+  | 'NUMERIC_ROUND_NUMBER'
+  | 'LOW_VARIANCE'
+  | 'OUTLIER_IQR'
+  | 'SEQUENCE_GAP';
 export type AnomalyStatus = 'PENDING' | 'RESOLVED';
 export type DecisionAction = 'APPROVED' | 'CORRECTED' | 'DISCARDED';
 

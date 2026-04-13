@@ -1511,16 +1511,20 @@ class ProcessDatasetUseCase:
             if sc.dtype not in _STRING_DTYPES:
                 # Numeric LOW_VARIANCE is audit-only; no automatic correction.
                 return []
+            # BUG FIX v10: cast to Utf8 before to_list() — Categorical series may
+            # return integer category codes instead of string values in some Polars
+            # versions, causing str(v) == "A" comparisons to fail for all rows.
+            sc_str = sc.cast(pl.Utf8) if sc.dtype not in (pl.Utf8, pl.String) else sc
             dominant_value = anomaly.original_value
             if dominant_value is None:
-                non_null = sc.drop_nulls()
+                non_null = sc_str.drop_nulls()
                 if non_null.len() > 0:
                     vc = non_null.value_counts(sort=True)
-                    dominant_value = vc[col][0]
+                    dominant_value = str(vc[col][0]) if col in vc.columns else str(vc.columns[0])
             if dominant_value is None:
                 return []
             return [
-                i for i, v in enumerate(sc.to_list())
+                i for i, v in enumerate(sc_str.to_list())
                 if v is not None and str(v).strip() == str(dominant_value).strip()
             ]
 
@@ -1545,23 +1549,51 @@ class ProcessDatasetUseCase:
             ]
 
         def _find_sequence_gap(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            # BUG FIX v10: re-compute IQR fence from actual data instead of using
+            # the stored canonical range in original_value.  The stored range may
+            # be too permissive (e.g. "C|1|750") so values like C0500/C0750 that
+            # are clearly outliers vs the true cluster [1-315] get missed.
             _seq_pat2 = re.compile(r"^([A-Za-z\-_]*)(\d+)$")
             parts = (anomaly.original_value or "").split("|")
-            if len(parts) < 3:
+            if not parts:
                 return []
             prefix = parts[0]
-            try:
-                seq_min, seq_max = int(parts[1]), int(parts[2])
-            except (ValueError, IndexError):
+
+            # Collect all nums matching the prefix from the snapshot
+            values = sc.to_list()
+            all_nums: list[int] = []
+            for v in values:
+                if v is None:
+                    continue
+                m_v = _seq_pat2.fullmatch(str(v))
+                if m_v and m_v.group(1) == prefix:
+                    all_nums.append(int(m_v.group(2)))
+
+            if not all_nums:
                 return []
+
+            # Re-derive the canonical range via IQR (same logic as _detect_anomalies)
+            sorted_nums = sorted(all_nums)
+            n = len(sorted_nums)
+            q1 = sorted_nums[max(0, int(n * 0.25))]
+            q3 = sorted_nums[min(n - 1, int(n * 0.75))]
+            iqr = q3 - q1
+            if iqr > 0:
+                fence_low  = q1 - 1.5 * iqr
+                fence_high = q3 + 1.5 * iqr
+            else:
+                # IQR == 0 fallback: p10–p90
+                fence_low  = sorted_nums[max(0, int(n * 0.10))]
+                fence_high = sorted_nums[min(n - 1, int(n * 0.90))]
+
             rows: list[int] = []
-            for i, v in enumerate(sc.to_list()):
+            for i, v in enumerate(values):
                 if v is None:
                     continue
                 m_v = _seq_pat2.fullmatch(str(v))
                 if m_v and m_v.group(1) == prefix:
                     num = int(m_v.group(2))
-                    if num < seq_min or num > seq_max:
+                    if num < fence_low or num > fence_high:
                         rows.append(i)
             return rows
 

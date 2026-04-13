@@ -29,6 +29,7 @@ def _make_mock_job_repository() -> AsyncMock:
     repo = AsyncMock(spec=JobRepository)
     repo.update_job_status = AsyncMock()
     repo.save_anomalies = AsyncMock()
+    repo.get_anomalies = AsyncMock(return_value=[])
     repo.get_decisions = AsyncMock(return_value=[])
     repo.count_pending_anomalies = AsyncMock(return_value=0)
     return repo
@@ -219,8 +220,9 @@ class TestProcessDatasetHITLFlow:
         result = await use_case.execute(input_data)
 
         assert result.success is True
-        # Outlier row (Eve, 9999) should be dropped if it was DISCARDED
-        assert result.rows_processed < 5 or result.anomalies_detected > 0
+        # DISCARDED = reject the suggestion, keep original value (no rows dropped).
+        # All rows are preserved — business rule: never delete records.
+        assert result.anomalies_detected > 0
 
     # ------------------------------------------------------------------
     # HITL applies CORRECTED decisions (update cell value)

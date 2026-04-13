@@ -970,9 +970,10 @@ class TestIntegration:
         )
 
         result_df = use_case._apply_decisions(df, [anomaly_outlier], [decision])
-        # The outlier row (9999) should be removed
-        assert result_df.height == 20
-        assert 9999 not in result_df["age"].to_list()
+        # Business rule: rows are NEVER deleted.  IR DELETE is treated as a
+        # no-op, so all 21 rows (including the outlier) are preserved.
+        assert result_df.height == 21
+        assert 9999 in result_df["age"].to_list()
 
 
 # ===========================================================================

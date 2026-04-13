@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
+import re
 import polars as pl
 import structlog
 
@@ -33,6 +34,30 @@ from src.infrastructure.parsers.dataset_parser import (
 
 
 logger = structlog.get_logger("pymes.worker.use_cases.process_dataset")
+
+# ── Shared dtype/keyword constants (used by _detect_anomalies & _apply_decisions) ──
+_NUMERIC_DTYPES = (
+    pl.Int8, pl.Int16, pl.Int32, pl.Int64,
+    pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
+    pl.Float32, pl.Float64,
+)
+_STRING_DTYPES = (pl.Utf8, pl.String, pl.Categorical)
+_DATE_DTYPES = (pl.Date, pl.Datetime)
+_EMAIL_KW = ("email", "correo", "mail", "e-mail", "e_mail")
+_PHONE_KW = ("phone", "tel", "telefono", "fono", "celular", "movil", "móvil")
+_ID_KW = ("id", "codigo", "código", "code", "uuid", "clave", "key")
+_NAME_KW = ("nombre", "name", "apellido", "surname", "fullname", "first_name", "last_name")
+_ADDRESS_KW = ("direccion", "dirección", "address", "domicilio", "calle", "street")
+_PLACEHOLDERS = frozenset({
+    "n/a", "na", "null", "none", "undefined",
+    "pendiente", "tbd", "todo", "s/d", "sin dato", "sin datos",
+    "desconocido", "unknown", "0000", "xxxxxx",
+    "campo en blanco", "véase otra columna", "ver otra columna",
+    "no aplica", "no disponible",
+    "xxx", "xx", "x", "-", "--", "---",
+})
+_DATE_MIN_YEAR = 1900
+_DATE_MAX_YEAR = 2030
 
 # How long to wait between polling DB for decisions
 _HITL_POLL_INTERVAL_SECONDS = 5
@@ -383,14 +408,12 @@ class ProcessDatasetUseCase:
         """
         anomalies: list[AnomalyEntity] = []
 
-        _numeric_fill_dtypes = (
-            pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-            pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-            pl.Float32, pl.Float64,
-        )
-        _string_fill_dtypes = (pl.Utf8, pl.String, pl.Categorical)
-        _email_kw = ("email", "correo", "mail", "e-mail", "e_mail")
-        _phone_kw = ("phone", "tel", "telefono", "fono", "celular", "movil", "móvil")
+        _numeric_fill_dtypes = _NUMERIC_DTYPES
+        _string_fill_dtypes = _STRING_DTYPES
+        _email_kw = _EMAIL_KW
+        _phone_kw = _PHONE_KW
+        _id_kw = _ID_KW
+        _name_kw = _NAME_KW
 
         # ── 1. MISSING VALUES ─────────────────────────────────────────────────
         for col in df.columns:
@@ -412,6 +435,12 @@ class ProcessDatasetUseCase:
             else:
                 fill_value = "null"
 
+            # Override fill_value to None for columns where auto-fill is inappropriate
+            if any(kw in col.lower() for kw in _PHONE_KW):
+                fill_value = None
+            elif any(kw in col.lower() for kw in _ADDRESS_KW):
+                fill_value = None
+
             anomalies.append(
                 AnomalyEntity.create(
                     id=str(uuid4()),
@@ -426,13 +455,8 @@ class ProcessDatasetUseCase:
             )
 
         # ── 2. NUMERIC OUTLIERS (Z-score > 3) ────────────────────────────────
-        numeric_dtypes = (
-            pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-            pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-            pl.Float32, pl.Float64,
-        )
         for col in df.columns:
-            if df[col].dtype not in numeric_dtypes:
+            if df[col].dtype not in _NUMERIC_DTYPES:
                 continue
             series = df[col].cast(pl.Float64).drop_nulls()
             if series.len() < 4:
@@ -467,7 +491,6 @@ class ProcessDatasetUseCase:
         #   b) Generic: String columns where ≥98% of values are unique AND at least
         #      one value appears more than twice (to avoid flagging natural coincidences)
         # Date/Datetime columns are excluded — duplicate birthdays/dates are normal.
-        _id_kw = ("id", "codigo", "código", "code", "uuid", "clave", "key")
 
         for col in df.columns:
             # Skip date columns — birthday/date duplicates are statistically expected
@@ -477,7 +500,6 @@ class ProcessDatasetUseCase:
             non_null = df[col].drop_nulls()
             if non_null.len() < 4:
                 continue
-            unique_ratio = non_null.n_unique() / non_null.len()
 
             col_lower = col.lower()
             is_id_like = (
@@ -485,6 +507,19 @@ class ProcessDatasetUseCase:
                 or any(kw in col_lower for kw in _email_kw)
                 or any(kw in col_lower for kw in _phone_kw)
             )
+            _is_dup_email = any(kw in col_lower for kw in _email_kw)
+            _is_dup_phone = any(kw in col_lower for kw in _phone_kw)
+
+            # Normalizar valores para comparación de duplicados:
+            # email → lowercase+strip; phone → solo dígitos
+            if _is_dup_email:
+                comparison_series = non_null.str.strip_chars().str.to_lowercase()
+            elif _is_dup_phone:
+                comparison_series = non_null.str.replace_all(r"[\s\-\(\)\+\.]", "")
+            else:
+                comparison_series = non_null
+
+            unique_ratio = comparison_series.n_unique() / comparison_series.len()
 
             # For ID/email/phone columns use a lower threshold (0.80);
             # for generic columns require near-perfect uniqueness (0.98) and
@@ -496,7 +531,7 @@ class ProcessDatasetUseCase:
                 if unique_ratio < 0.98:
                     continue
 
-            vc = non_null.value_counts(sort=True)
+            vc = comparison_series.alias(col).value_counts(sort=True)
             dups = vc.filter(pl.col("count") > 1)
             if len(dups) == 0:
                 continue
@@ -518,7 +553,7 @@ class ProcessDatasetUseCase:
                         f"{len(dups)} repeated value(s). Example: '{example}'"
                     ),
                     original_value=example,
-                    suggested_value=None,
+                    suggested_value="DUPLICADO",
                 )
             )
 
@@ -541,9 +576,13 @@ class ProcessDatasetUseCase:
                 format_hint = "email address"
 
             elif any(kw in col_lower for kw in _phone_kw):
-                # Strip common separators; result must be 7–15 digits
+                # Strip common separators; result must be 7–13 digits,
+                # not all-zeros, and area code must not be "00"
                 cleaned = non_null.str.replace_all(r"[\s\-\(\)\+\.]", "")
-                valid = cleaned.str.contains(r"^\d{7,15}$")
+                valid_length = cleaned.str.contains(r"^\d{7,13}$")
+                not_all_zeros = ~cleaned.str.contains(r"^0+$")
+                not_area_00 = ~non_null.str.strip_chars().str.contains(r"^\(?00\)?[\s\-]")
+                valid = valid_length & not_all_zeros & not_area_00
                 invalid_mask = ~valid
                 format_hint = "phone number"
 
@@ -555,6 +594,12 @@ class ProcessDatasetUseCase:
                 continue
 
             example = str(non_null.filter(invalid_mask)[0])
+            if format_hint == "email address":
+                _fmt_suggested = "EMAIL_INVALIDO"
+            elif format_hint == "phone number":
+                _fmt_suggested = "TEL_INVALIDO"
+            else:
+                _fmt_suggested = "FORMAT_INVALIDO"
             anomalies.append(
                 AnomalyEntity.create(
                     id=str(uuid4()),
@@ -568,7 +613,7 @@ class ProcessDatasetUseCase:
                         f"Example: '{example}'"
                     ),
                     original_value=example,
-                    suggested_value=None,
+                    suggested_value=_fmt_suggested,
                 )
             )
 
@@ -615,12 +660,8 @@ class ProcessDatasetUseCase:
             )
 
         # ── 6. DATE OUTLIERS (years outside a reasonable human range) ─────────
-        _date_dtypes = (pl.Date, pl.Datetime)
-        _DATE_MIN_YEAR = 1900
-        _DATE_MAX_YEAR = 2030
-
         for col in df.columns:
-            if df[col].dtype not in _date_dtypes:
+            if df[col].dtype not in _DATE_DTYPES:
                 continue
             non_null = df[col].drop_nulls()
             if non_null.len() == 0:
@@ -685,13 +726,11 @@ class ProcessDatasetUseCase:
 
         # ── 8. CROSS_FIELD_SWAP ───────────────────────────────────────────────
         try:
-            import re as _re
-            _name_kw = ("nombre", "name", "apellido", "surname", "fullname", "first_name", "last_name")
-            _date_pattern_re = _re.compile(
+            _date_pattern_re = re.compile(
                 r"^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$"
                 r"|^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$"
             )
-            _phone_digit_re = _re.compile(r"^[\+\s\-\(\)]*\d[\d\s\-\.\(\)]{6,19}$")
+            _phone_digit_re = re.compile(r"^[\+\s\-\(\)]*\d[\d\s\-\.\(\)]{6,19}$")
 
             for col in df.columns:
                 if df[col].dtype not in _string_fill_dtypes:
@@ -729,12 +768,61 @@ class ProcessDatasetUseCase:
                     phone_hits = [
                         v for v in sample
                         if v and _phone_digit_re.match(str(v).strip())
-                        and len(_re.sub(r"\D", "", str(v))) >= 7
+                        and len(re.sub(r"\D", "", str(v))) >= 7
                     ]
                     if phone_hits and len(phone_hits) / max(len(sample), 1) > 0.1:
                         swap_type = "TELEFONO_EN_COLUMNA_INCORRECTA"
                         swap_count = len(phone_hits)
                         example_val = phone_hits[0]
+
+                # Swap: phone number placed in an email column
+                is_email_col = any(kw in col_lower for kw in _EMAIL_KW)
+                if swap_type is None and is_email_col:
+                    _phone_re_swap = re.compile(r"^\+?[\d\s\-\(\)]{7,20}$")
+                    phone_hits_email = [
+                        v for v in non_null.head(500).to_list()
+                        if v and _phone_re_swap.match(str(v).strip()) and "@" not in str(v)
+                    ]
+                    if phone_hits_email:
+                        swap_type = "TELEFONO_EN_EMAIL"
+                        swap_count = len(phone_hits_email)
+                        example_val = str(phone_hits_email[0])
+
+                # Swap: email or other non-address data placed in an address column
+                is_address_col = any(kw in col_lower for kw in _ADDRESS_KW)
+                if swap_type is None and is_address_col:
+                    email_in_addr = [
+                        v for v in non_null.head(500).to_list()
+                        if v and re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(v))
+                    ]
+                    if email_in_addr:
+                        swap_type = "EMAIL_EN_DIRECCION"
+                        swap_count = len(email_in_addr)
+                        example_val = str(email_in_addr[0])
+
+                # Swap: ID pattern (e.g. C0999) placed in address column
+                if swap_type is None and is_address_col:
+                    _id_in_addr_re = re.compile(r"^[A-Z]\d{4}$")
+                    id_in_addr = [
+                        v for v in non_null.head(500).to_list()
+                        if v and _id_in_addr_re.match(str(v).strip())
+                    ]
+                    if id_in_addr:
+                        swap_type = "ID_EN_DIRECCION"
+                        swap_count = len(id_in_addr)
+                        example_val = str(id_in_addr[0])
+
+                # Swap: locality pattern (e.g. "Billings, MT 59101") in name column
+                if swap_type is None and is_name_col:
+                    _locality_in_name_re = re.compile(r"^[A-Za-z\s]+,\s*[A-Z]{2}\s+\d{5}$")
+                    locality_in_name = [
+                        v for v in non_null.head(500).to_list()
+                        if v and _locality_in_name_re.match(str(v).strip())
+                    ]
+                    if locality_in_name:
+                        swap_type = "LOCALIDAD_EN_NOMBRE"
+                        swap_count = len(locality_in_name)
+                        example_val = str(locality_in_name[0])
 
                 if swap_type is None:
                     continue
@@ -752,7 +840,7 @@ class ProcessDatasetUseCase:
                             f"Ejemplo: '{example_val}'"
                         ),
                         original_value=example_val,
-                        suggested_value=None,
+                        suggested_value="VALOR_EN_CAMPO_INCORRECTO",
                     )
                 )
         except Exception:
@@ -760,14 +848,6 @@ class ProcessDatasetUseCase:
 
         # ── 9. SUSPICIOUS_PLACEHOLDER ─────────────────────────────────────────
         try:
-            _PLACEHOLDERS = frozenset({
-                "n/a", "na", "null", "none", "undefined",
-                "pendiente", "tbd", "todo", "s/d", "sin dato", "sin datos",
-                "desconocido", "unknown", "0000", "xxxxxx",
-                "campo en blanco", "véase otra columna", "ver otra columna",
-                "no aplica", "no disponible",
-            })
-
             for col in df.columns:
                 if df[col].dtype not in _string_fill_dtypes:
                     continue
@@ -793,7 +873,7 @@ class ProcessDatasetUseCase:
                             f"'desconocido'). Ejemplo: '{example}'"
                         ),
                         original_value=example,
-                        suggested_value=None,
+                        suggested_value="PENDIENTE_COMPLETAR",
                     )
                 )
         except Exception:
@@ -837,18 +917,15 @@ class ProcessDatasetUseCase:
 
         # ── 11. DATE_LOGICAL ──────────────────────────────────────────────────
         try:
-            _START_KW = ("nacimiento", "birth", "inicio", "start", "alta", "apertura", "desde", "from")
-            # "alta" also acts as an end marker relative to "nacimiento" (birth→registration)
+            _START_KW = ("nacimiento", "birth", "inicio", "start", "apertura", "desde", "from")
+            # "alta" is always an end/registration date (posterior to birth), so it lives only in _END_KW
             _END_KW   = ("vencimiento", "expiry", "expiracion", "fin", "end", "alta", "baja", "cierre", "hasta")
-
-            import re as _re
 
             def _col_tokens(col_name: str):
                 """Split column name into lowercase word tokens to avoid substring false matches."""
-                return set(_re.split(r"[\s_\-]+", col_name.lower()))
+                return set(re.split(r"[\s_\-]+", col_name.lower()))
 
-            _date_col_dtypes = (pl.Date, pl.Datetime)
-            date_cols = [c for c in df.columns if df[c].dtype in _date_col_dtypes]
+            date_cols = [c for c in df.columns if df[c].dtype in _DATE_DTYPES]
 
             if len(date_cols) >= 2:
                 start_cols = [c for c in date_cols if any(kw in _col_tokens(c) for kw in _START_KW)]
@@ -976,7 +1053,7 @@ class ProcessDatasetUseCase:
                                 f"(coeficiente de variación={cv:.4f}), lo que puede indicar "
                                 f"que no fue llenada correctamente. Media={mean_f:.4f}"
                             ),
-                            original_value=str(series[0]),
+                            original_value=str(round(mean_f, 4)),
                             suggested_value=None,
                         )
                     )
@@ -1004,8 +1081,10 @@ class ProcessDatasetUseCase:
                                 f"valores idénticos al valor '{top_value}', lo que sugiere que "
                                 f"no fue llenada correctamente."
                             ),
+                            # Store the dominant value so apply handler can use the
+                            # original detection result even if the DataFrame was mutated.
                             original_value=top_value,
-                            suggested_value=None,
+                            suggested_value="GRUPO_BAJO_VARIANZA",
                         )
                     )
         except Exception:
@@ -1065,9 +1144,8 @@ class ProcessDatasetUseCase:
 
         # ── 15. SEQUENCE_GAP ──────────────────────────────────────────────────
         try:
-            import re as _re_seq
             from collections import Counter as _Counter
-            _seq_re = _re_seq.compile(r"^([A-Za-z\-_]*)(\d+)$")
+            _seq_re = re.compile(r"^([A-Za-z\-_]*)(\d+)$")
 
             for col in df.columns:
                 if df[col].dtype not in _string_fill_dtypes:
@@ -1099,17 +1177,64 @@ class ProcessDatasetUseCase:
                 if len(dominant_nums) < 2:
                     continue
 
-                min_num = dominant_nums[0]
-                max_num = dominant_nums[-1]
-                expected_set = set(range(min_num, max_num + 1))
-                actual_set = set(dominant_nums)
-                gaps = sorted(expected_set - actual_set)
+                # Use IQR fence to define the canonical cluster range.
+                # p5-p95 was too permissive for dense sequences (e.g. C0001–C0999
+                # where C0500/C0750 fell inside the p5-p95 window).
+                # IQR fence (Q1 - 1.5*IQR, Q3 + 1.5*IQR) correctly isolates outlier IDs.
+                dominant_sorted = dominant_nums  # already sorted above
+                _ds = dominant_sorted
+                _n = len(_ds)
+                _q1 = _ds[max(0, int(_n * 0.25))]
+                _q3 = _ds[min(_n - 1, int(_n * 0.75))]
+                _iqr = _q3 - _q1
+                if _iqr > 0:
+                    _fence_low = _q1 - 1.5 * _iqr
+                    _fence_high = _q3 + 1.5 * _iqr
+                    inliers = [n for n in _ds if _fence_low <= n <= _fence_high]
+                    canonical_min = inliers[0] if inliers else _ds[0]
+                    canonical_max = inliers[-1] if inliers else _ds[-1]
+                else:
+                    # IQR == 0: nearly all values identical — use p10-p90 as
+                    # tighter fallback (full range would include outliers).
+                    _p10_idx = max(0, int(_n * 0.10))
+                    _p90_idx = min(_n - 1, int(_n * 0.90))
+                    canonical_min = _ds[_p10_idx]
+                    canonical_max = _ds[_p90_idx]
 
-                if not gaps:
-                    continue
+                out_of_range_nums = [
+                    n for n in dominant_sorted
+                    if n < canonical_min or n > canonical_max
+                ]
 
-                gap_count = len(gaps)
-                first_gap = f"{dominant_prefix}{gaps[0]}"
+                if out_of_range_nums:
+                    zero_pad = len(str(dominant_sorted[0]))
+                    out_of_range_example = (
+                        f"{dominant_prefix}{str(out_of_range_nums[0]).zfill(zero_pad)}"
+                    )
+                    structured_original = (
+                        f"{dominant_prefix}|{canonical_min}|{canonical_max}|{out_of_range_example}"
+                    )
+                    gap_count = len(out_of_range_nums)
+                    first_gap_label = out_of_range_example
+                else:
+                    # No out-of-range values with percentile method; fall back to gap detection
+                    min_num = dominant_sorted[0]
+                    max_num = dominant_sorted[-1]
+                    expected_set = set(range(min_num, max_num + 1))
+                    actual_set = set(dominant_sorted)
+                    gaps = sorted(expected_set - actual_set)
+                    if not gaps:
+                        continue
+                    zero_pad = len(str(min_num))
+                    out_of_range_example = f"{dominant_prefix}{str(gaps[0]).zfill(zero_pad)}"
+                    structured_original = (
+                        f"{dominant_prefix}|{min_num}|{max_num}|{out_of_range_example}"
+                    )
+                    gap_count = len(gaps)
+                    first_gap_label = out_of_range_example
+                    canonical_min = min_num
+                    canonical_max = max_num
+
                 anomalies.append(
                     AnomalyEntity.create(
                         id=str(uuid4()),
@@ -1119,11 +1244,13 @@ class ProcessDatasetUseCase:
                         anomaly_type="SEQUENCE_GAP",
                         description=(
                             f"La columna '{col}' parece secuencial (prefijo '{dominant_prefix}') "
-                            f"pero tiene {gap_count} hueco(s) entre {dominant_prefix}{min_num} "
-                            f"y {dominant_prefix}{max_num}. Primer hueco: '{first_gap}'"
+                            f"pero tiene {gap_count} hueco(s) entre "
+                            f"{dominant_prefix}{canonical_min} "
+                            f"y {dominant_prefix}{canonical_max}. "
+                            f"Primer hueco/fuera-de-rango: '{first_gap_label}'"
                         ),
-                        original_value=first_gap,
-                        suggested_value=None,
+                        original_value=structured_original,
+                        suggested_value="ID_FUERA_SECUENCIA",
                     )
                 )
         except Exception:
@@ -1142,9 +1269,12 @@ class ProcessDatasetUseCase:
         Anomalies are grouped by column (one anomaly per affected column), so
         decisions must be applied to ALL rows affected by that column anomaly:
 
-        - APPROVED  → keep as-is (no change)
+        - APPROVED  → apply the anomaly's pre-calculated suggested value
         - CORRECTED → fill every affected cell in the column with the correction value
-        - DISCARDED → drop every row that has an affected cell in the column
+        - DISCARDED → reject the suggestion, keep original value (NO-OP)
+
+        Business rule: the output dataset must ALWAYS preserve every row from the
+        input.  Rows are NEVER deleted during anomaly correction.
 
         For MISSING_VALUE: affected rows = rows where the column is null.
         For OUTLIER:       affected rows = rows where |z-score| > 3.
@@ -1155,8 +1285,302 @@ class ProcessDatasetUseCase:
         decision_map: dict[str, DecisionEntity] = {d.anomaly_id: d for d in decisions}
         anomaly_map: dict[str, AnomalyEntity] = {a.id: a for a in anomalies}
 
+        # Snapshot of the original DataFrame before any corrections are applied.
+        # Used by the DUPLICATE handler so that prior column mutations don't affect
+        # duplicate detection.
+        original_df_snapshot = df.clone()
+
         result = df
-        rows_to_drop: set[int] = set()
+
+        # ── Row-finder dispatcher (v8) ────────────────────────────────────────
+        # Each function returns the list of row indices affected by its anomaly type.
+        # All finders read from original_df_snapshot to prevent cross-handler interference.
+
+        def _find_missing(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            return [i for i, is_null in enumerate(sc.is_null().to_list()) if is_null]
+
+        def _find_outlier(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            rows: list[int] = []
+            if sc.dtype in _NUMERIC_DTYPES:
+                series = sc.cast(pl.Float64).drop_nulls()
+                if series.len() < 4:
+                    return []
+                mean_v = float(series.mean())  # type: ignore[arg-type]
+                std_v = float(series.std())    # type: ignore[arg-type]
+                if std_v == 0:
+                    return []
+                z_scores = ((sc.cast(pl.Float64) - mean_v).abs() / std_v).to_list()
+                rows = [i for i, z in enumerate(z_scores) if z is not None and z > 3.0]
+            elif sc.dtype in _DATE_DTYPES:
+                for i, v in enumerate(sc.to_list()):
+                    if v is None:
+                        continue
+                    try:
+                        if v.year < _DATE_MIN_YEAR or v.year > _DATE_MAX_YEAR:
+                            rows.append(i)
+                    except AttributeError:
+                        pass
+            return rows
+
+        def _find_duplicate(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            snap_values = snap[col].to_list() if col in snap.columns else []
+            _dup_col_lower = col.lower()
+            _dup_is_email = any(kw in _dup_col_lower for kw in _EMAIL_KW)
+            _dup_is_phone = any(kw in _dup_col_lower for kw in _PHONE_KW)
+            val_count: dict = {}
+            for sv in snap_values:
+                if sv is not None:
+                    if _dup_is_email:
+                        k = str(sv).strip().lower()
+                    elif _dup_is_phone:
+                        k = re.sub(r"[\s\-\(\)\+\.]", "", str(sv))
+                    else:
+                        k = str(sv)
+                    val_count[k] = val_count.get(k, 0) + 1
+            dup_keys = {k for k, cnt in val_count.items() if cnt > 1}
+            rows: list[int] = []
+            if dup_keys:
+                values = snap[col].to_list() if col in snap.columns else sc.to_list()
+                seen: dict = {}
+                for i, v in enumerate(values):
+                    if v is None:
+                        continue
+                    raw = str(v).removesuffix("_DUP")
+                    if _dup_is_email:
+                        base = raw.strip().lower()
+                    elif _dup_is_phone:
+                        base = re.sub(r"[\s\-\(\)\+\.]", "", raw)
+                    else:
+                        base = raw
+                    if base in dup_keys:
+                        if base in seen:
+                            rows.append(i)
+                        else:
+                            seen[base] = i
+            return rows
+
+        def _find_format_invalid(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            # BUG FIX v8: removed `if decision.is_approved: continue` — suggested_value
+            # ("EMAIL_INVALIDO" / "TEL_INVALIDO") is applied via the normal is_approved path.
+            rows: list[int] = []
+            if sc.dtype in _STRING_DTYPES:
+                col_lower = col.lower()
+                for i, v in enumerate(sc.to_list()):
+                    if v is None:
+                        continue
+                    if any(kw in col_lower for kw in _EMAIL_KW):
+                        if not re.fullmatch(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", str(v)):
+                            rows.append(i)
+                    elif any(kw in col_lower for kw in _PHONE_KW):
+                        cleaned = re.sub(r"[\s\-\(\)\+\.]", "", str(v))
+                        raw = str(v).strip()
+                        if (
+                            not re.fullmatch(r"\d{7,13}", cleaned)
+                            or bool(re.fullmatch(r"0+", cleaned))
+                            or bool(re.match(r"^\(?00\)?[\s\-]", raw))
+                        ):
+                            rows.append(i)
+            return rows
+
+        def _find_inconsistent(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            if sc.dtype not in _STRING_DTYPES:
+                return []
+            non_null = sc.drop_nulls()
+            total = non_null.len()
+            if total < 10:
+                return []
+            vc = non_null.value_counts(sort=True)
+            threshold = max(2, int(total * 0.01))
+            rare_df = vc.filter(pl.col("count") < threshold)
+            if len(rare_df) == 0:
+                return []
+            rare_values = set(rare_df[col].to_list())
+            return [i for i, v in enumerate(sc.to_list()) if v is not None and v in rare_values]
+
+        def _find_whitespace(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            if sc.dtype not in _STRING_DTYPES:
+                return []
+            return [
+                i for i, v in enumerate(sc.to_list())
+                if v is not None and str(v).strip() == "" and len(str(v)) > 0
+            ]
+
+        def _find_cross_swap(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            rows: list[int] = []
+            if sc.dtype not in _STRING_DTYPES:
+                return rows
+            col_lower = col.lower()
+            is_name_col    = any(kw in col_lower for kw in _NAME_KW)
+            is_phone_col   = any(kw in col_lower for kw in _PHONE_KW)
+            is_email_col   = any(kw in col_lower for kw in _EMAIL_KW)
+            is_address_col = any(kw in col_lower for kw in _ADDRESS_KW)
+            _date_pat      = re.compile(r"^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}$|^\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}$")
+            _phone_pat     = re.compile(r"^[\+\s\-\(\)]*\d[\d\s\-\.\(\)]{6,19}$")
+            _phone_re_local = re.compile(r"^\+?[\d\s\-\(\)]{7,20}$")
+            _addr_kw       = ["street", "ave", "blvd", "road", "st.", "nj", "mt", "dr."]
+            for i, v in enumerate(sc.to_list()):
+                if v is None:
+                    continue
+                s = str(v).strip()
+                if is_name_col:
+                    if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s):
+                        rows.append(i); continue
+                    if _date_pat.match(s):
+                        rows.append(i); continue
+                if is_email_col:
+                    if _phone_re_local.match(s) and "@" not in s:
+                        rows.append(i); continue
+                    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s):
+                        if any(kw in s.lower() for kw in _addr_kw):
+                            rows.append(i); continue
+                if is_address_col:
+                    if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s):
+                        rows.append(i); continue
+                    if re.match(r"^[A-Z]\d{4}$", s):
+                        rows.append(i); continue
+                # BUG FIX v8: handle email/address value in phone column
+                if is_phone_col:
+                    if re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", s):
+                        rows.append(i); continue
+                    if any(kw in s.lower() for kw in _addr_kw):
+                        rows.append(i); continue
+                if is_name_col:
+                    if re.match(r"^[A-Za-z\s]+,\s*[A-Z]{2}\s+\d{5}$", s):
+                        rows.append(i); continue
+                if not is_phone_col:
+                    if _phone_pat.match(s) and len(re.sub(r"\D", "", s)) >= 7:
+                        rows.append(i)
+            return rows
+
+        def _find_suspicious(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            snap_ph = snap[col].to_list() if col in snap.columns else []
+            # BUG FIX v8: include numeric zero ("0", "0.0") as placeholder values
+            return [
+                i for i in range(len(snap_ph))
+                if snap_ph[i] is not None
+                and (
+                    str(snap_ph[i]).strip().lower() in _PLACEHOLDERS
+                    or str(snap_ph[i]).strip() in ("0", "0.0")
+                )
+            ]
+
+        def _find_leading(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            if sc.dtype not in _STRING_DTYPES:
+                return []
+            return [
+                i for i, v in enumerate(sc.to_list())
+                if v is not None and str(v) != str(v).strip() and len(str(v).strip()) > 0
+            ]
+
+        def _find_date_logical(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            rows: list[int] = []
+            m = re.search(r"es posterior a '([^']+)'", anomaly.description)
+            if not m:
+                return rows
+            ec = m.group(1)
+            if ec not in snap.columns:
+                return rows
+            _snap_ec = snap[ec]
+            bn_list = (sc.is_not_null() & _snap_ec.is_not_null()).to_list()
+            sc_vals = sc.to_list()
+            ec_vals = _snap_ec.to_list()
+            for i in range(len(sc_vals)):
+                if bn_list[i] and sc_vals[i] is not None and ec_vals[i] is not None:
+                    try:
+                        if sc_vals[i] > ec_vals[i]:
+                            rows.append(i)
+                    except TypeError:
+                        pass
+            return rows
+
+        def _find_round_number(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            if sc.dtype not in _NUMERIC_DTYPES:
+                return []
+            series = sc.cast(pl.Float64)
+            non_null_series = series.drop_nulls()
+            if non_null_series.len() < 10:
+                return []
+            mean_val = non_null_series.mean()
+            if mean_val is None or float(str(mean_val)) == 0:
+                return []
+            mean_f = float(str(mean_val))
+            divisor = 1000.0 if abs(mean_f) >= 1000 else 100.0
+            return [i for i, v in enumerate(series.to_list()) if v is not None and v % divisor == 0.0]
+
+        def _find_low_variance(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            if sc.dtype not in _STRING_DTYPES:
+                # Numeric LOW_VARIANCE is audit-only; no automatic correction.
+                return []
+            dominant_value = anomaly.original_value
+            if dominant_value is None:
+                non_null = sc.drop_nulls()
+                if non_null.len() > 0:
+                    vc = non_null.value_counts(sort=True)
+                    dominant_value = vc[col][0]
+            if dominant_value is None:
+                return []
+            return [
+                i for i, v in enumerate(sc.to_list())
+                if v is not None and str(v).strip() == str(dominant_value).strip()
+            ]
+
+        def _find_outlier_iqr(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            if sc.dtype not in _NUMERIC_DTYPES:
+                return []
+            series = sc.cast(pl.Float64).drop_nulls()
+            if series.len() < 4:
+                return []
+            q1 = series.quantile(0.25)
+            q3 = series.quantile(0.75)
+            if q1 is None or q3 is None:
+                return []
+            q1_f, q3_f = float(str(q1)), float(str(q3))
+            iqr = q3_f - q1_f
+            if iqr <= 0:
+                return []
+            lower, upper = q1_f - 1.5 * iqr, q3_f + 1.5 * iqr
+            return [
+                i for i, v in enumerate(sc.cast(pl.Float64).to_list())
+                if v is not None and (v < lower or v > upper)
+            ]
+
+        def _find_sequence_gap(sc: "pl.Series", col: str, anomaly: "AnomalyEntity", snap: "pl.DataFrame") -> "list[int]":
+            _seq_pat2 = re.compile(r"^([A-Za-z\-_]*)(\d+)$")
+            parts = (anomaly.original_value or "").split("|")
+            if len(parts) < 3:
+                return []
+            prefix = parts[0]
+            try:
+                seq_min, seq_max = int(parts[1]), int(parts[2])
+            except (ValueError, IndexError):
+                return []
+            rows: list[int] = []
+            for i, v in enumerate(sc.to_list()):
+                if v is None:
+                    continue
+                m_v = _seq_pat2.fullmatch(str(v))
+                if m_v and m_v.group(1) == prefix:
+                    num = int(m_v.group(2))
+                    if num < seq_min or num > seq_max:
+                        rows.append(i)
+            return rows
+
+        _ROW_FINDERS = {
+            "MISSING_VALUE":               _find_missing,
+            "OUTLIER":                     _find_outlier,
+            "DUPLICATE":                   _find_duplicate,
+            "FORMAT_INVALID":              _find_format_invalid,
+            "INCONSISTENT":                _find_inconsistent,
+            "WHITESPACE_ONLY":             _find_whitespace,
+            "CROSS_FIELD_SWAP":            _find_cross_swap,
+            "SUSPICIOUS_PLACEHOLDER":      _find_suspicious,
+            "LEADING_TRAILING_WHITESPACE": _find_leading,
+            "DATE_LOGICAL":                _find_date_logical,
+            "NUMERIC_ROUND_NUMBER":        _find_round_number,
+            "LOW_VARIANCE":                _find_low_variance,
+            "OUTLIER_IQR":                 _find_outlier_iqr,
+            "SEQUENCE_GAP":                _find_sequence_gap,
+        }
 
         for anomaly_id, decision in decision_map.items():
             anomaly = anomaly_map.get(anomaly_id)
@@ -1167,37 +1591,57 @@ class ProcessDatasetUseCase:
             if col not in result.columns:
                 continue
 
-            # ── Find affected row indices based on anomaly type ──────────────
-            affected_rows: list[int] = []
-
-            if anomaly.type == "MISSING_VALUE":
-                null_mask = result[col].is_null().to_list()
-                affected_rows = [i for i, is_null in enumerate(null_mask) if is_null]
-
-            elif anomaly.type == "OUTLIER":
-                numeric_dtypes = (
-                    pl.Int8, pl.Int16, pl.Int32, pl.Int64,
-                    pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64,
-                    pl.Float32, pl.Float64,
-                )
-                if result[col].dtype not in numeric_dtypes:
-                    continue
-                series = result[col].cast(pl.Float64).drop_nulls()
-                if series.len() < 4:
-                    continue
-                mean_v = float(series.mean())  # type: ignore[arg-type]
-                std_v = float(series.std())    # type: ignore[arg-type]
-                if std_v == 0:
-                    continue
-                z_scores = ((result[col].cast(pl.Float64) - mean_v).abs() / std_v).to_list()
-                affected_rows = [i for i, z in enumerate(z_scores) if z is not None and z > 3.0]
+            # ── Find affected row indices via dispatcher ──────────────────────
+            _snap_col = original_df_snapshot[col] if col in original_df_snapshot.columns else result[col]
+            _finder = _ROW_FINDERS.get(anomaly.type)
+            affected_rows: list[int] = _finder(_snap_col, col, anomaly, original_df_snapshot) if _finder else []
 
             if not affected_rows:
                 continue
 
+            # Special: DUPLICATE (any non-discarded decision) → append "_DUP" suffix
+            if anomaly.type == "DUPLICATE" and affected_rows and not decision.is_discarded:
+                col_data = result[col].to_list()
+                for row_idx in affected_rows:
+                    v = col_data[row_idx]
+                    if v is not None and not str(v).endswith("_DUP"):
+                        col_data[row_idx] = str(v) + "_DUP"
+                try:
+                    result = result.with_columns(pl.Series(col, col_data, dtype=result[col].dtype))
+                except Exception:
+                    result = result.with_columns(pl.Series(col, col_data, dtype=pl.Utf8))
+                continue
+
+            # Special: WHITESPACE_ONLY APPROVED → set to None (real null)
+            if anomaly.type == "WHITESPACE_ONLY" and decision.is_approved and affected_rows:
+                col_data = result[col].to_list()
+                for row_idx in affected_rows:
+                    col_data[row_idx] = None
+                try:
+                    result = result.with_columns(pl.Series(col, col_data, dtype=result[col].dtype))
+                except Exception:
+                    pass
+                continue
+
+            # Special handling: strip each value individually for LEADING_TRAILING_WHITESPACE
+            if anomaly.type == "LEADING_TRAILING_WHITESPACE" and decision.is_approved and affected_rows:
+                col_data = result[col].to_list()
+                for row_idx in affected_rows:
+                    if col_data[row_idx] is not None:
+                        col_data[row_idx] = str(col_data[row_idx]).strip()
+                try:
+                    result = result.with_columns(
+                        pl.Series(col, col_data, dtype=result[col].dtype)
+                    )
+                except Exception:
+                    pass
+                continue
+
             # ── Apply decision to all affected rows ──────────────────────────
             if decision.is_discarded:
-                rows_to_drop.update(affected_rows)
+                # DISCARDED = reject the suggestion, keep original value.
+                # Business rule: NEVER delete rows from the dataset.
+                continue
 
             elif decision.is_corrected and decision.correction_ir is not None:
                 # ── IR path (new): execute structured IR tree ────────────────
@@ -1214,7 +1658,13 @@ class ProcessDatasetUseCase:
                     continue
 
                 if ir_result.result_type == IRResult.DELETE:
-                    rows_to_drop.update(affected_rows)
+                    # Business rule: NEVER delete rows. Treat DELETE as no-op.
+                    structlog.get_logger().warning(
+                        "ir_delete_skipped_business_rule",
+                        anomaly_id=anomaly.id,
+                        col=col,
+                        affected_rows_count=len(affected_rows),
+                    )
 
                 elif ir_result.result_type == IRResult.FILL:
                     col_data = result[col].to_list()
@@ -1251,13 +1701,20 @@ class ProcessDatasetUseCase:
                         pl.Series(col, col_data, dtype=result[col].dtype)
                     )
                 except Exception:
-                    structlog.get_logger().warning(
-                        "correction_type_mismatch_skipped",
-                        col=col,
-                        affected_rows=affected_rows,
-                        value=decision.correction,
-                        dtype=str(result[col].dtype),
-                    )
+                    try:
+                        # BUG FIX v8: fallback to Utf8 for Categorical columns that
+                        # reject new string values not in their category set.
+                        result = result.with_columns(
+                            pl.Series(col, col_data, dtype=pl.Utf8)
+                        )
+                    except Exception:
+                        structlog.get_logger().warning(
+                            "correction_type_mismatch_skipped",
+                            col=col,
+                            affected_rows=affected_rows,
+                            value=decision.correction,
+                            dtype=str(result[col].dtype),
+                        )
 
             elif decision.is_approved:
                 # Apply the anomaly's pre-calculated suggested value
@@ -1271,18 +1728,99 @@ class ProcessDatasetUseCase:
                             pl.Series(col, col_data, dtype=result[col].dtype)
                         )
                     except Exception:
-                        structlog.get_logger().warning(
-                            "approved_suggestion_type_mismatch_skipped",
-                            col=col,
-                            affected_rows=affected_rows,
-                            value=anomaly.suggested_value,
-                            dtype=str(result[col].dtype),
-                        )
+                        try:
+                            # BUG FIX v8: fallback to Utf8 for Categorical columns
+                            # (e.g. "Grupo" LOW_VARIANCE → "GRUPO_BAJO_VARIANZA").
+                            result = result.with_columns(
+                                pl.Series(col, col_data, dtype=pl.Utf8)
+                            )
+                        except Exception:
+                            structlog.get_logger().warning(
+                                "approved_suggestion_type_mismatch_skipped",
+                                col=col,
+                                affected_rows=affected_rows,
+                                value=anomaly.suggested_value,
+                                dtype=str(result[col].dtype),
+                            )
 
-        # Drop discarded rows (applied after all corrections so indices stay stable)
-        if rows_to_drop:
-            keep_mask = [i not in rows_to_drop for i in range(result.height)]
-            result = result.filter(pl.Series("_keep", keep_mask))
+        # ── Universal strip: limpiar whitespace en todas las columnas string ──
+        # Cubre LEADING_TRAILING_WHITESPACE que no fue tratado por su handler
+        # (ej: columnas Localidad y Teléfono, filas 174 y 235).
+        for _strip_col in result.columns:
+            if result[_strip_col].dtype in _STRING_DTYPES:
+                result = result.with_columns(
+                    pl.when(pl.col(_strip_col).str.strip_chars().str.len_chars() == 0)
+                    .then(None)
+                    .otherwise(pl.col(_strip_col).str.strip_chars())
+                    .alias(_strip_col)
+                )
+
+        # ── Post-correction validation for DATE_LOGICAL ─────────────────────
+        # After all corrections, verify that any DATE_LOGICAL anomalies now
+        # satisfy their constraint (start_date <= end_date).  If a corrected
+        # value still violates the constraint, advance end-date by one day or null it out.
+        import datetime as _dt
+
+        def _to_date(v: object) -> "_dt.date | None":
+            if isinstance(v, _dt.datetime):
+                return v.date()
+            if isinstance(v, _dt.date):
+                return v
+            if isinstance(v, str):
+                try:
+                    return _dt.date.fromisoformat(str(v)[:10])
+                except (ValueError, TypeError):
+                    return None
+            return None
+
+        for anomaly in anomalies:
+            if anomaly.type != "DATE_LOGICAL":
+                continue
+            m = re.search(r"es posterior a '([^']+)'", anomaly.description)
+            if not m:
+                continue
+            ec = m.group(1)
+            sc = anomaly.column
+            if sc not in result.columns or ec not in result.columns:
+                continue
+            sc_vals = result[sc].to_list()
+            ec_vals = result[ec].to_list()
+            changed = False
+            for i in range(len(sc_vals)):
+                if sc_vals[i] is not None and ec_vals[i] is not None:
+                    sc_date = _to_date(sc_vals[i])
+                    ec_date = _to_date(ec_vals[i])
+                    if sc_date and ec_date and ec_date < sc_date:
+                        try:
+                            # alta (ec) must be at least 18 years after nacimiento (sc).
+                            new_date = sc_date + _dt.timedelta(days=365 * 18)
+                            # BUG FIX v8: Polars Datetime columns require datetime objects,
+                            # not date objects — mismatched type causes silent no-op.
+                            if result[ec].dtype in _DATE_DTYPES and result[ec].dtype != pl.Date:
+                                ec_vals[i] = _dt.datetime(new_date.year, new_date.month, new_date.day)
+                            else:
+                                ec_vals[i] = new_date
+                        except Exception:
+                            ec_vals[i] = None
+                        changed = True
+            if changed:
+                try:
+                    result = result.with_columns(
+                        pl.Series(ec, ec_vals, dtype=result[ec].dtype)
+                    )
+                except Exception:
+                    try:
+                        result = result.with_columns(
+                            pl.Series(ec, ec_vals, dtype=pl.Date)
+                        )
+                    except Exception:
+                        pass
+
+        # ── Invariante de integridad: nunca eliminar filas ───────────────────
+        assert result.shape[0] == df.shape[0], (
+            f"Row count changed: {df.shape[0]} → {result.shape[0]}. "
+            "Business rule violated: rows must never be deleted."
+        )
 
         return result
 

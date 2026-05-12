@@ -18,6 +18,26 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
+  # PYMES DASHBOARD POSTGRESQL - Dedicated Relational Database for DashboardPYMES
+  # ==========================================================================
+  pymes-dashboard-db:
+    image: postgres:16-alpine
+    container_name: pymes-dashboard-db
+    environment:
+      POSTGRES_USER: ${PYMES_DASHBOARD_DB_USER:-pymes_dashboard}
+      POSTGRES_PASSWORD: ${PYMES_DASHBOARD_DB_PASSWORD:-pymes_dashboard_dev_password}
+      POSTGRES_DB: ${PYMES_DASHBOARD_DB_NAME:-pymes_dashboard}
+    volumes:
+      - pymes_dashboard_postgres_data:/var/lib/postgresql/data
+      - ../services/dashboard-pymes/backend/src/models/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PYMES_DASHBOARD_DB_USER:-pymes_dashboard} -d ${PYMES_DASHBOARD_DB_NAME:-pymes_dashboard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ==========================================================================
   # POSTGRESQL - Relational Database
   # ==========================================================================
   postgres:
@@ -136,6 +156,63 @@ services:
     restart: unless-stopped
 
   # ==========================================================================
+  # PYMES DASHBOARD BACKEND - Node.js + Express (from DashboardPYMES)
+  # ==========================================================================
+  pymes-dashboard-backend:
+    build:
+      context: ../services/dashboard-pymes/backend
+      dockerfile: Dockerfile
+    container_name: pymes-dashboard-backend
+    ports:
+      - "${PYMES_DASHBOARD_BACKEND_PORT:-3002}:3001" # Expose 3002 externally, 3001 internally
+    environment:
+      PORT: 3001
+      DB_HOST: pymes-dashboard-db # Will connect to the new dedicated DB service
+      DB_PORT: 5432
+      DB_NAME: ${PYMES_DASHBOARD_DB_NAME:-pymes_dashboard}
+      DB_USER: ${PYMES_DASHBOARD_DB_USER:-pymes_dashboard}
+      DB_PASSWORD: ${PYMES_DASHBOARD_DB_PASSWORD:-pymes_dashboard_dev_password}
+      JWT_SECRET: ${PYMES_DASHBOARD_JWT_SECRET:-dev-dashboard-jwt-secret}
+      JWT_EXPIRES_IN: ${PYMES_DASHBOARD_JWT_EXPIRES_IN:-7d}
+      AGENT_URL: http://pymes-dashboard-agent:8000 # Will connect to the new dedicated agent service
+    volumes:
+      - ../services/dashboard-pymes/backend:/app
+      - /app/node_modules # Anonymous volume to prevent host node_modules from overriding container's
+    depends_on:
+      pymes-dashboard-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ==========================================================================
+  # PYMES DASHBOARD AGENT - Python + FastAPI (from DashboardPYMES)
+  # ==========================================================================
+  pymes-dashboard-agent:
+    build:
+      context: ../services/dashboard-pymes/agent
+      dockerfile: Dockerfile
+    container_name: pymes-dashboard-agent
+    ports:
+      - "${PYMES_DASHBOARD_AGENT_PORT:-8001}:8000" # Expose 8001 externally, 8000 internally
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      DB_HOST: pymes-dashboard-db # Will connect to the new dedicated DB service
+      DB_PORT: 5432
+      DB_NAME: ${PYMES_DASHBOARD_DB_NAME:-pymes_dashboard}
+      DB_USER: ${PYMES_DASHBOARD_DB_USER:-pymes_dashboard}
+      DB_PASSWORD: ${PYMES_DASHBOARD_DB_PASSWORD:-pymes_dashboard_dev_password}
+      BACKEND_URL: http://pymes-dashboard-backend:3001 # Connects to the new backend service
+    volumes:
+      - ../services/dashboard-pymes/agent:/app
+      - agent_venv:/app/venv # Anonymous volume for Python virtual environment
+    depends_on:
+      pymes-dashboard-db:
+        condition: service_healthy
+      pymes-dashboard-backend: # Depends on backend to ensure DB schema is created first
+        condition: service_started
+    restart: unless-stopped
+
+  # ==========================================================================
   # WORKER ETL - Python + FastAPI + Polars
   # ==========================================================================
   worker:
@@ -226,6 +303,8 @@ volumes:
   postgres_data:
   minio_data:
   frontend_node_modules:
+  pymes_dashboard_postgres_data:
+  agent_venv:
 
 networks:
   default:

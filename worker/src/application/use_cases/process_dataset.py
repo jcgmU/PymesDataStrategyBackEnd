@@ -315,6 +315,41 @@ class ProcessDatasetUseCase:
                 "decisions_applied": decisions_applied,
             }
 
+            # ---------------------------------------------------------------
+            # Step 8.5: Send Cleaned Data to DashboardPYMES Microservice
+            # ---------------------------------------------------------------
+            try:
+                log.info("Sending cleaned dataset to DashboardPYMES backend")
+                dashboard_url = os.getenv("DASHBOARD_API_URL", "http://pymes-dashboard-backend:3001")
+                api_key = os.getenv("INTERNAL_API_KEY", "pymes-internal-s2s-secret")
+                
+                # Cast date/datetime columns to string to ensure JSON serialization works
+                df_for_json = df.clone()
+                for col in df_for_json.columns:
+                    if df_for_json[col].dtype in _DATE_DTYPES:
+                        df_for_json = df_for_json.with_columns(pl.col(col).cast(pl.Utf8))
+                        
+                json_data = {
+                    "empresa_id": 1,
+                    "nombre_dataset": f"Limpio: {input_data.filename}",
+                    "tipo_dataset": "general",
+                    "filas": df_for_json.to_dicts()
+                }
+
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        f"{dashboard_url}/api/upload/cleaned-json",
+                        json=json_data,
+                        headers={"x-api-key": api_key},
+                        timeout=30.0
+                    )
+                    resp.raise_for_status()
+                    log.info("Cleaned dataset successfully sent to DashboardPYMES", status=resp.status_code)
+            except Exception as e:
+                log.error("Failed to send cleaned dataset to DashboardPYMES", error=str(e), error_type=type(e).__name__)
+                # We continue the pipeline even if the S2S call fails
+                result_meta["dashboard_sync_error"] = str(e)
+
             # Step 9: Update to COMPLETED
             await self._update_status(
                 job_id_str,

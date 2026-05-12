@@ -1,0 +1,6 @@
+id,nombre,ventas,fecha,categoria
+1,Producto A,100.50,2023-01-15,Electrónica
+2,Producto B,200.75,2023-02-20,Hogar
+3,Producto C,150.00,2023-03-10,Electrónica
+4,Producto D,,2023-04-05,
+5,Producto A,300.00,2023-05-12,Electrónica
